@@ -34,3 +34,4 @@ uv.lock
 .python-version
 
 MODULE.bazel.lock
+impeller_install_debug_unopt
