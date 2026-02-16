@@ -1,0 +1,26 @@
+// Test file for Impeller renderer
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
+
+export component MainWindow inherits Window {
+    width: 800px;
+    height: 600px;
+    background: #87CEEB; // Sky blue
+    
+    Rectangle {
+        width: 400px;
+        height: 300px;
+        x: 200px;
+        y: 150px;
+        background: #FF4444; // Red
+        border-radius: 20px;
+        border-width: 4px;
+        border-color: #AA0000; // Dark red
+        
+        Text {
+            text: "Impeller Renderer Test";
+            color: white;
+            font-size: 32px;
+        }
+    }
+}

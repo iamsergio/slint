@@ -135,6 +135,9 @@ renderer-vello = ["i-slint-backend-selector/renderer-vello", "std"]
 ## Same as `renderer-skia`, but compiles only Skia's CPU rendering path, without a GPU renderer.
 renderer-skia-software = ["i-slint-backend-selector/renderer-skia-software", "std"]
 
+## Render using [Impeller](https://github.com/flutter/engine) (Flutter's rendering engine).
+renderer-impeller = ["i-slint-backend-selector/renderer-impeller", "std"]
+
 ## Make the winit backend capable of rendering using the software renderer.
 renderer-software = ["i-slint-backend-selector/renderer-software"]
 
