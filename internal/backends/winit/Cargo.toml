@@ -42,6 +42,7 @@ x11 = [
 ]
 renderer-femtovg = ["i-slint-renderer-femtovg/opengl", "dep:glutin", "dep:glutin-winit"]
 renderer-femtovg-wgpu = ["i-slint-renderer-femtovg/wgpu", "dep:i-slint-renderer-femtovg", "unstable-wgpu-28"]
+renderer-impeller = ["dep:i-slint-renderer-impeller"]
 renderer-skia = ["i-slint-renderer-skia"]
 renderer-skia-opengl = ["renderer-skia", "i-slint-renderer-skia/opengl"]
 renderer-skia-vulkan = ["renderer-skia", "i-slint-renderer-skia/vulkan"]
@@ -61,7 +62,7 @@ unstable-wgpu-28 = [
   "i-slint-renderer-femtovg?/unstable-wgpu-28",
   "i-slint-renderer-skia?/unstable-wgpu-28",
 ]
-default = []
+default = ["renderer-software", "x11", "wayland"]
 
 [dependencies]
 i-slint-core = { workspace = true, features = ["default"] }
@@ -80,6 +81,9 @@ scopeguard = { version = "1.1.0", default-features = false }
 
 # For the FemtoVG renderer
 i-slint-renderer-femtovg = { workspace = true, features = ["default"], optional = true }
+
+# For the Impeller renderer
+i-slint-renderer-impeller = { workspace = true, optional = true }
 
 # For the Skia renderer
 i-slint-renderer-skia = { workspace = true, features = ["default"], optional = true }

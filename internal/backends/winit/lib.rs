@@ -83,6 +83,8 @@ mod renderer {
 
     #[cfg(enable_femtovg_renderer)]
     pub(crate) mod femtovg;
+    #[cfg(enable_impeller_renderer)]
+    pub(crate) mod impeller;
     #[cfg(enable_skia_renderer)]
     pub(crate) mod skia;
 
@@ -103,6 +105,8 @@ pub(crate) mod wasm_input_helper;
 cfg_if::cfg_if! {
     if #[cfg(enable_femtovg_renderer)] {
         const DEFAULT_RENDERER_NAME: &str = "FemtoVG";
+    } else if #[cfg(enable_impeller_renderer)] {
+        const DEFAULT_RENDERER_NAME: &str = "Impeller";
     } else if #[cfg(enable_skia_renderer)] {
         const DEFAULT_RENDERER_NAME: &'static str = "Skia";
     } else if #[cfg(feature = "renderer-software")] {
@@ -122,6 +126,8 @@ fn default_renderer_factory(
             renderer::femtovg::WGPUFemtoVGRenderer::new_suspended(shared_backend_data)
         } else if #[cfg(all(feature = "renderer-femtovg", supports_opengl))] {
             renderer::femtovg::GlutinFemtoVGRenderer::new_suspended(shared_backend_data)
+        } else if #[cfg(enable_impeller_renderer)] {
+            renderer::impeller::WinitImpellerRenderer::new_suspended(shared_backend_data)
         } else if #[cfg(feature = "renderer-software")] {
             renderer::sw::WinitSoftwareRenderer::new_suspended(shared_backend_data)
         } else {
@@ -151,6 +157,8 @@ fn try_create_window_with_fallback_renderer(
             not(feature = "renderer-femtovg-wgpu")
         ))]
         renderer::femtovg::GlutinFemtoVGRenderer::new_suspended,
+        #[cfg(enable_impeller_renderer)]
+        renderer::impeller::WinitImpellerRenderer::new_suspended,
         #[cfg(feature = "renderer-software")]
         renderer::sw::WinitSoftwareRenderer::new_suspended,
     ]
@@ -460,6 +468,10 @@ impl BackendBuilder {
             #[cfg(all(enable_skia_renderer, not(target_os = "android")))]
             (Some("skia-software"), None) => {
                 renderer::skia::WinitSkiaRenderer::new_software_suspended
+            }
+            #[cfg(enable_impeller_renderer)]
+            (Some("impeller"), _) => {
+                renderer::impeller::WinitImpellerRenderer::new_suspended
             }
             #[cfg(feature = "renderer-software")]
             (Some("sw"), None) | (Some("software"), None) => {

@@ -4845,6 +4845,7 @@ dependencies = [
  "i-slint-core",
  "i-slint-core-macros",
  "i-slint-renderer-femtovg",
+ "i-slint-renderer-impeller",
  "i-slint-renderer-skia",
  "i-slint-renderer-software",
  "imgref",
