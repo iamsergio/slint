@@ -5020,6 +5020,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "i-slint-renderer-impeller"
+version = "1.16.0"
+dependencies = [
+ "cfg-if",
+ "glutin",
+ "i-slint-common",
+ "i-slint-core",
+ "i-slint-core-macros",
+ "raw-window-handle",
+]
+
+[[package]]
 name = "i-slint-renderer-skia"
 version = "1.16.0"
 dependencies = [
