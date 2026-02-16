@@ -4,5 +4,7 @@
 #![doc = include_str!("README.md")]
 #![doc(html_logo_url = "https://slint.dev/logo/slint-logo-square-light.svg")]
 
-// Minimal placeholder for the Impeller renderer
-// Full implementation will be added incrementally
+pub mod ffi;
+
+#[cfg(test)]
+mod tests;
