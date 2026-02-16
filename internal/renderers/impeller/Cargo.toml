@@ -1,0 +1,34 @@
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+[package]
+name = "i-slint-renderer-impeller"
+description = "Impeller based renderer for Slint"
+authors.workspace = true
+edition = "2024"
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+build = "build.rs"
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+i-slint-core = { workspace = true, features = ["default", "shared-parley"] }
+i-slint-core-macros = { workspace = true, features = ["default"] }
+i-slint-common = { workspace = true, features = ["default"] }
+
+raw-window-handle = { version = "0.6", features = ["std"] }
+cfg-if = "1"
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+glutin = { workspace = true, default-features = false, features = ["egl", "wgl"] }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--generate-link-to-definition"]
