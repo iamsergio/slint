@@ -14,16 +14,15 @@ use i_slint_common::sharedfontique;
 use i_slint_core::api::{
     PhysicalSize as PhysicalWindowSize, RenderingNotifier, SetRenderingNotifierError,
 };
-// use i_slint_core::item_tree::ItemTreeWeak;
-use i_slint_core::lengths::{LogicalLength, LogicalPoint, LogicalRect, LogicalSize};
-// use i_slint_core::lengths::ScaleFactor;
+use i_slint_core::item_tree::ItemTreeWeak;
+use i_slint_core::lengths::{LogicalLength, LogicalPoint, LogicalRect, LogicalSize, ScaleFactor};
 use i_slint_core::platform::PlatformError;
 use i_slint_core::textlayout::sharedparley;
 use i_slint_core::window::{WindowAdapter, WindowInner};
-// use i_slint_core::Brush;
+use i_slint_core::Brush;
 
 mod ffi;
-// mod itemrenderer;
+mod itemrenderer;
 
 #[cfg(test)]
 mod tests;
@@ -311,9 +310,31 @@ impl ImpellerRenderer {
 
         let window_inner = WindowInner::from_pub(&window);
 
-        window_inner.draw_contents(|_components| {
-            // TODO: Create and use ImpellerItemRenderer once implemented
-            // For now, do nothing - renderer will be implemented in step 5
+        window_inner.draw_contents(|components| {
+            let mut item_renderer = itemrenderer::ImpellerItemRenderer::new(
+                display_list_builder,
+                ScaleFactor::new(window_inner.scale_factor()),
+                &window,
+            );
+
+            if let Some(window_item_rc) = window_inner.window_item_rc() {
+                let window_item =
+                    window_item_rc.downcast::<i_slint_core::items::WindowItem>().unwrap();
+                if let Brush::SolidColor(clear_color) = window_item.as_pin_ref().background() {
+                    item_renderer.clear_background(&clear_color);
+                }
+            }
+
+            for (component, origin) in components {
+                if let Some(component) = ItemTreeWeak::upgrade(component) {
+                    i_slint_core::item_rendering::render_component_items(
+                        &component,
+                        &mut item_renderer,
+                        *origin,
+                        &window_adapter,
+                    );
+                }
+            }
         });
 
         let display_list =
