@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for entry in walkdir::WalkDir::new(&prefix)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|entry| entry.file_name() != "target")
+        .filter_entry(|entry| entry.file_name() != "target" && entry.file_name() != "3rdparty")
     {
         let entry = entry?;
         let path = entry.path();
