@@ -13,6 +13,7 @@ fn main() {
        skia_wgpu_30: { all(enable_skia_renderer, any(enable_skia_gpu, feature = "unstable-wgpu-30")) },
        skia_software_only: { all(feature = "renderer-skia-software", not(any(enable_skia_gpu, target_os = "android"))) },
        enable_femtovg_renderer: { any(feature = "renderer-femtovg", feature = "renderer-femtovg-wgpu") },
+       enable_impeller_renderer: { feature = "renderer-impeller" },
        enable_accesskit: { all(feature = "accessibility", not(target_arch = "wasm32")) },
        supports_opengl: { all(any(feature = "renderer-skia-opengl", feature = "renderer-femtovg"), not(ios_and_friends)) },
        supports_metal: { all(target_vendor = "apple", enable_skia_wgpu) },
