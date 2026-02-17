@@ -4,7 +4,7 @@
 use std::ffi::CString;
 use std::pin::Pin;
 
-use i_slint_core::graphics::Image;
+use i_slint_core::graphics::{euclid, Image, ImageInner, SharedImageBuffer};
 use i_slint_core::item_rendering::{
     CachedRenderingData, ItemRenderer, PlainOrStyledText, RenderImage, RenderText,
 };
@@ -14,7 +14,7 @@ use i_slint_core::items::{
 };
 use i_slint_core::lengths::{
     LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
-    ScaleFactor,
+    PhysicalPx, ScaleFactor,
 };
 use i_slint_core::{Brush, Color};
 
@@ -357,14 +357,40 @@ impl<'a> ImpellerItemRenderer<'a> {
     }
 
     /// Render a Slint Image into an Impeller texture, returning the texture and its dimensions.
-    fn image_to_texture(&self, image: &Image) -> Option<(ffi::ImpellerTexture, u32, u32)> {
-        let pixel_buffer = image.to_rgba8()?;
-        let width = pixel_buffer.width();
-        let height = pixel_buffer.height();
+    ///
+    /// `target_size` is used for scalable images (SVGs) to rasterize at the correct resolution.
+    /// Pass `None` for non-scalable images or when the target size is unknown.
+    fn image_to_texture(
+        &self,
+        image: &Image,
+        target_size: Option<euclid::Size2D<u32, PhysicalPx>>,
+    ) -> Option<(ffi::ImpellerTexture, u32, u32)> {
+        let image_inner: &ImageInner = image.into();
+        let buffer = image_inner.render_to_buffer(target_size)?;
+        let (rgba_data, width, height) = match &buffer {
+            SharedImageBuffer::RGBA8(buf) => (buf.as_bytes(), buf.width(), buf.height()),
+            SharedImageBuffer::RGBA8Premultiplied(buf) => {
+                (buf.as_bytes(), buf.width(), buf.height())
+            }
+            SharedImageBuffer::RGB8(buf) => {
+                // Convert RGB8 to RGBA8
+                let w = buf.width();
+                let h = buf.height();
+                let rgba: Vec<u8> = buf
+                    .as_bytes()
+                    .chunks_exact(3)
+                    .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+                    .collect();
+                let texture = self.create_texture_from_rgba(&rgba, w, h);
+                if texture.is_null() {
+                    return None;
+                }
+                return Some((texture, w, h));
+            }
+        };
         if width == 0 || height == 0 {
             return None;
         }
-        let rgba_data = pixel_buffer.as_bytes();
         let texture = self.create_texture_from_rgba(rgba_data, width, height);
         if texture.is_null() {
             return None;
@@ -543,14 +569,43 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         }
 
         let source = image.source();
-        let (texture, src_width, src_height) = match self.image_to_texture(&source) {
+        let sf = self.scale_factor.get();
+        let target_w = size.width * sf;
+        let target_h = size.height * sf;
+
+        // Compute target size for scalable images (SVGs) to rasterize at the right resolution
+        let target_size = {
+            let source_size = source.size();
+            if source_size.width > 0 && source_size.height > 0 {
+                let src_w = source_size.width as f32;
+                let src_h = source_size.height as f32;
+                let image_fit = image.image_fit();
+                let (tw, th) = match image_fit {
+                    ImageFit::Fill => (target_w, target_h),
+                    ImageFit::Contain | ImageFit::Preserve => {
+                        let ratio = (target_w / src_w).min(target_h / src_h);
+                        (src_w * ratio, src_h * ratio)
+                    }
+                    ImageFit::Cover => {
+                        let ratio = (target_w / src_w).max(target_h / src_h);
+                        (src_w * ratio, src_h * ratio)
+                    }
+                    _ => (target_w, target_h),
+                };
+                Some(euclid::Size2D::<u32, PhysicalPx>::new(
+                    tw.ceil() as u32,
+                    th.ceil() as u32,
+                ))
+            } else {
+                None
+            }
+        };
+
+        let (texture, src_width, src_height) = match self.image_to_texture(&source, target_size) {
             Some(t) => t,
             None => return,
         };
 
-        let sf = self.scale_factor.get();
-        let target_w = size.width * sf;
-        let target_h = size.height * sf;
         let src_w = src_width as f32;
         let src_h = src_height as f32;
 
@@ -1008,7 +1063,7 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
     }
 
     fn draw_image_direct(&mut self, image: i_slint_core::graphics::Image) {
-        let (texture, _width, _height) = match self.image_to_texture(&image) {
+        let (texture, _width, _height) = match self.image_to_texture(&image, None) {
             Some(t) => t,
             None => return,
         };
