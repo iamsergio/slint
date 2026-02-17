@@ -141,6 +141,11 @@ unsafe extern "C" {
         y_scale: f32,
     );
 
+    pub fn ImpellerDisplayListBuilderRotate(
+        builder: ImpellerDisplayListBuilder,
+        angle_degrees: f32,
+    );
+
     pub fn ImpellerDisplayListBuilderClipRect(
         builder: ImpellerDisplayListBuilder,
         rect: *const ImpellerRect,
