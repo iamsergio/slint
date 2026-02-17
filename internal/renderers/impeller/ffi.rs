@@ -16,6 +16,7 @@ pub type ImpellerParagraph = *mut c_void;
 pub type ImpellerParagraphBuilder = *mut c_void;
 pub type ImpellerParagraphStyle = *mut c_void;
 pub type ImpellerTexture = *mut c_void;
+pub type ImpellerColorSource = *mut c_void;
 
 pub type ImpellerCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -142,6 +143,21 @@ pub enum ImpellerTextDirection {
 pub enum ImpellerTextureSampling {
     NearestNeighbor = 0,
     Linear = 1,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerTileMode {
+    Clamp = 0,
+    Repeat = 1,
+    Mirror = 2,
+    Decal = 3,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ImpellerMatrix {
+    pub m: [f32; 16],
 }
 
 #[repr(C)]
@@ -328,6 +344,58 @@ unsafe extern "C" {
         sampling: ImpellerTextureSampling,
         paint: ImpellerPaint,
     );
+
+    // Paint - color source
+    pub fn ImpellerPaintSetColorSource(
+        paint: ImpellerPaint,
+        color_source: ImpellerColorSource,
+    );
+
+    // Color source - gradients
+    pub fn ImpellerColorSourceRelease(color_source: ImpellerColorSource);
+
+    pub fn ImpellerColorSourceCreateLinearGradientNew(
+        start_point: *const ImpellerPoint,
+        end_point: *const ImpellerPoint,
+        stop_count: u32,
+        colors: *const ImpellerColor,
+        stops: *const f32,
+        tile_mode: ImpellerTileMode,
+        transformation: *const ImpellerMatrix,
+    ) -> ImpellerColorSource;
+
+    pub fn ImpellerColorSourceCreateRadialGradientNew(
+        center: *const ImpellerPoint,
+        radius: f32,
+        stop_count: u32,
+        colors: *const ImpellerColor,
+        stops: *const f32,
+        tile_mode: ImpellerTileMode,
+        transformation: *const ImpellerMatrix,
+    ) -> ImpellerColorSource;
+
+    pub fn ImpellerColorSourceCreateConicalGradientNew(
+        start_center: *const ImpellerPoint,
+        start_radius: f32,
+        end_center: *const ImpellerPoint,
+        end_radius: f32,
+        stop_count: u32,
+        colors: *const ImpellerColor,
+        stops: *const f32,
+        tile_mode: ImpellerTileMode,
+        transformation: *const ImpellerMatrix,
+    ) -> ImpellerColorSource;
+
+    pub fn ImpellerColorSourceCreateSweepGradientNew(
+        center: *const ImpellerPoint,
+        start: f32,
+        end: f32,
+        stop_count: u32,
+        colors: *const ImpellerColor,
+        stops: *const f32,
+        tile_mode: ImpellerTileMode,
+        transformation: *const ImpellerMatrix,
+    ) -> ImpellerColorSource;
 
     pub fn ImpellerDisplayListBuilderDrawTextureRect(
         builder: ImpellerDisplayListBuilder,

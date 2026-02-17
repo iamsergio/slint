@@ -87,17 +87,202 @@ impl<'a> ImpellerItemRenderer<'a> {
                 if color.alpha() == 0 {
                     None
                 } else {
-                    Some(ffi::ImpellerColor {
-                        red: color.red() as f32 / 255.0,
-                        green: color.green() as f32 / 255.0,
-                        blue: color.blue() as f32 / 255.0,
-                        alpha: color.alpha() as f32 / 255.0,
-                        color_space: ffi::ImpellerColorSpace::SRGB,
-                    })
+                    Some(self.color_to_impeller(color))
                 }
             }
             _ => None,
         }
+    }
+
+    /// Convert gradient stops to Impeller color/position arrays.
+    fn gradient_stops_to_impeller<'s>(
+        &self,
+        stops: impl Iterator<Item = &'s i_slint_core::graphics::GradientStop>,
+    ) -> (Vec<ffi::ImpellerColor>, Vec<f32>) {
+        let mut colors = Vec::new();
+        let mut positions = Vec::new();
+        for stop in stops {
+            colors.push(self.color_to_impeller(&stop.color));
+            positions.push(stop.position);
+        }
+        (colors, positions)
+    }
+
+    /// Compute linear gradient start/end points for a given angle (degrees) and size.
+    /// Equivalent to `i_slint_core::graphics::line_for_angle`.
+    fn line_for_angle(angle: f32, width: f32, height: f32) -> (ffi::ImpellerPoint, ffi::ImpellerPoint) {
+        let angle = (angle + 90.0_f32).to_radians();
+        let (s, c) = angle.sin_cos();
+
+        let (a, b) = if s.abs() < f32::EPSILON {
+            let y = height / 2.0;
+            return if c < 0.0 {
+                (ffi::ImpellerPoint { x: 0.0, y }, ffi::ImpellerPoint { x: width, y })
+            } else {
+                (ffi::ImpellerPoint { x: width, y }, ffi::ImpellerPoint { x: 0.0, y })
+            };
+        } else if c * s < 0.0 {
+            let x = (s * width + c * height) * s / 2.0;
+            let y = -c * x / s + height;
+            (
+                ffi::ImpellerPoint { x, y },
+                ffi::ImpellerPoint { x: width - x, y: height - y },
+            )
+        } else {
+            let x = (s * width - c * height) * s / 2.0;
+            let y = -c * x / s;
+            (
+                ffi::ImpellerPoint { x: width - x, y: height - y },
+                ffi::ImpellerPoint { x, y },
+            )
+        };
+
+        if s > 0.0 { (a, b) } else { (b, a) }
+    }
+
+    /// Set up an ImpellerPaint from a Brush. Returns the paint handle (caller must release),
+    /// and an optional color source that must also be released.
+    /// Returns None if the brush is fully transparent.
+    ///
+    /// # Safety
+    /// Caller must ensure the returned paint and color source are released.
+    unsafe fn setup_paint_for_brush(
+        &self,
+        brush: &Brush,
+        rect: &ffi::ImpellerRect,
+    ) -> Option<(ffi::ImpellerPaint, Option<ffi::ImpellerColorSource>)> {
+        if brush.is_transparent() {
+            return None;
+        }
+
+        let paint = unsafe { ffi::ImpellerPaintNew() };
+        if paint.is_null() {
+            return None;
+        }
+
+        match brush {
+            Brush::SolidColor(color) => {
+                let c = self.color_to_impeller(color);
+                unsafe { ffi::ImpellerPaintSetColor(paint, &c as *const _) };
+                Some((paint, None))
+            }
+            Brush::LinearGradient(gradient) => {
+                let (colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
+                if colors.is_empty() {
+                    unsafe { ffi::ImpellerPaintRelease(paint) };
+                    return None;
+                }
+
+                let (start, end) =
+                    Self::line_for_angle(gradient.angle(), rect.width, rect.height);
+
+                let start_point =
+                    ffi::ImpellerPoint { x: rect.x + start.x, y: rect.y + start.y };
+                let end_point = ffi::ImpellerPoint { x: rect.x + end.x, y: rect.y + end.y };
+
+                let color_source = unsafe {
+                    ffi::ImpellerColorSourceCreateLinearGradientNew(
+                        &start_point as *const _,
+                        &end_point as *const _,
+                        colors.len() as u32,
+                        colors.as_ptr(),
+                        positions.as_ptr(),
+                        ffi::ImpellerTileMode::Clamp,
+                        std::ptr::null(),
+                    )
+                };
+
+                if color_source.is_null() {
+                    unsafe { ffi::ImpellerPaintRelease(paint) };
+                    return None;
+                }
+
+                unsafe { ffi::ImpellerPaintSetColorSource(paint, color_source) };
+                Some((paint, Some(color_source)))
+            }
+            Brush::RadialGradient(gradient) => {
+                let (colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
+                if colors.is_empty() {
+                    unsafe { ffi::ImpellerPaintRelease(paint) };
+                    return None;
+                }
+
+                let cx = rect.x + rect.width / 2.0;
+                let cy = rect.y + rect.height / 2.0;
+                let radius =
+                    0.5 * (rect.width * rect.width + rect.height * rect.height).sqrt();
+                let center = ffi::ImpellerPoint { x: cx, y: cy };
+
+                let color_source = unsafe {
+                    ffi::ImpellerColorSourceCreateRadialGradientNew(
+                        &center as *const _,
+                        radius,
+                        colors.len() as u32,
+                        colors.as_ptr(),
+                        positions.as_ptr(),
+                        ffi::ImpellerTileMode::Clamp,
+                        std::ptr::null(),
+                    )
+                };
+
+                if color_source.is_null() {
+                    unsafe { ffi::ImpellerPaintRelease(paint) };
+                    return None;
+                }
+
+                unsafe { ffi::ImpellerPaintSetColorSource(paint, color_source) };
+                Some((paint, Some(color_source)))
+            }
+            Brush::ConicGradient(gradient) => {
+                let (colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
+                if colors.is_empty() {
+                    unsafe { ffi::ImpellerPaintRelease(paint) };
+                    return None;
+                }
+
+                let cx = rect.x + rect.width / 2.0;
+                let cy = rect.y + rect.height / 2.0;
+                let center = ffi::ImpellerPoint { x: cx, y: cy };
+
+                let color_source = unsafe {
+                    ffi::ImpellerColorSourceCreateSweepGradientNew(
+                        &center as *const _,
+                        0.0,
+                        360.0,
+                        colors.len() as u32,
+                        colors.as_ptr(),
+                        positions.as_ptr(),
+                        ffi::ImpellerTileMode::Clamp,
+                        std::ptr::null(),
+                    )
+                };
+
+                if color_source.is_null() {
+                    unsafe { ffi::ImpellerPaintRelease(paint) };
+                    return None;
+                }
+
+                unsafe { ffi::ImpellerPaintSetColorSource(paint, color_source) };
+                Some((paint, Some(color_source)))
+            }
+            _ => {
+                unsafe { ffi::ImpellerPaintRelease(paint) };
+                None
+            }
+        }
+    }
+
+    /// Release paint and optional color source.
+    unsafe fn release_paint(
+        paint: ffi::ImpellerPaint,
+        color_source: Option<ffi::ImpellerColorSource>,
+    ) {
+        if let Some(cs) = color_source {
+            if !cs.is_null() {
+                unsafe { ffi::ImpellerColorSourceRelease(cs) };
+            }
+        }
+        unsafe { ffi::ImpellerPaintRelease(paint) };
     }
 
     fn color_to_impeller(&self, color: &Color) -> ffi::ImpellerColor {
@@ -183,22 +368,22 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
             return;
         }
 
-        let Some(color) = self.brush_to_color(&rect.background()) else { return };
-
         let impeller_rect = self.to_physical_rect(geometry);
+        let brush = rect.background();
 
         unsafe {
-            let paint = ffi::ImpellerPaintNew();
-            if !paint.is_null() {
-                ffi::ImpellerPaintSetColor(paint, &color as *const _);
-                ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Fill);
-                ffi::ImpellerDisplayListBuilderDrawRect(
-                    self.builder,
-                    &impeller_rect as *const _,
-                    paint,
-                );
-                ffi::ImpellerPaintRelease(paint);
-            }
+            let Some((paint, color_source)) =
+                self.setup_paint_for_brush(&brush, &impeller_rect)
+            else {
+                return;
+            };
+            ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Fill);
+            ffi::ImpellerDisplayListBuilderDrawRect(
+                self.builder,
+                &impeller_rect as *const _,
+                paint,
+            );
+            Self::release_paint(paint, color_source);
         }
     }
 
@@ -218,13 +403,14 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         let border_width = rect.border_width();
         let border_color = rect.border_color();
 
-        if let Some(background_color) = self.brush_to_color(&rect.background()) {
+        {
             let impeller_rect = self.to_physical_rect(geometry);
+            let background = rect.background();
 
             unsafe {
-                let paint = ffi::ImpellerPaintNew();
-                if !paint.is_null() {
-                    ffi::ImpellerPaintSetColor(paint, &background_color as *const _);
+                if let Some((paint, color_source)) =
+                    self.setup_paint_for_brush(&background, &impeller_rect)
+                {
                     ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Fill);
 
                     if border_radius.is_zero() {
@@ -261,59 +447,57 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
                         );
                     }
 
-                    ffi::ImpellerPaintRelease(paint);
+                    Self::release_paint(paint, color_source);
                 }
             }
         }
 
         if !border_color.is_transparent() && border_width > LogicalLength::new(0.0) {
-            if let Some(stroke_color) = self.brush_to_color(&border_color) {
-                let physical_border_width = border_width * self.scale_factor;
-                let impeller_rect = self.to_physical_rect(geometry);
+            let physical_border_width = border_width * self.scale_factor;
+            let impeller_rect = self.to_physical_rect(geometry);
 
-                unsafe {
-                    let paint = ffi::ImpellerPaintNew();
-                    if !paint.is_null() {
-                        ffi::ImpellerPaintSetColor(paint, &stroke_color as *const _);
-                        ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Stroke);
-                        ffi::ImpellerPaintSetStrokeWidth(paint, physical_border_width.get());
+            unsafe {
+                if let Some((paint, color_source)) =
+                    self.setup_paint_for_brush(&border_color, &impeller_rect)
+                {
+                    ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Stroke);
+                    ffi::ImpellerPaintSetStrokeWidth(paint, physical_border_width.get());
 
-                        if border_radius.is_zero() {
-                            ffi::ImpellerDisplayListBuilderDrawRect(
-                                self.builder,
-                                &impeller_rect as *const _,
-                                paint,
-                            );
-                        } else {
-                            let physical_radius = border_radius * self.scale_factor;
-                            let radii = ffi::ImpellerRoundingRadii {
-                                top_left: ffi::ImpellerPoint {
-                                    x: physical_radius.top_left,
-                                    y: physical_radius.top_left,
-                                },
-                                bottom_left: ffi::ImpellerPoint {
-                                    x: physical_radius.bottom_left,
-                                    y: physical_radius.bottom_left,
-                                },
-                                top_right: ffi::ImpellerPoint {
-                                    x: physical_radius.top_right,
-                                    y: physical_radius.top_right,
-                                },
-                                bottom_right: ffi::ImpellerPoint {
-                                    x: physical_radius.bottom_right,
-                                    y: physical_radius.bottom_right,
-                                },
-                            };
-                            ffi::ImpellerDisplayListBuilderDrawRoundedRect(
-                                self.builder,
-                                &impeller_rect as *const _,
-                                &radii as *const _,
-                                paint,
-                            );
-                        }
-
-                        ffi::ImpellerPaintRelease(paint);
+                    if border_radius.is_zero() {
+                        ffi::ImpellerDisplayListBuilderDrawRect(
+                            self.builder,
+                            &impeller_rect as *const _,
+                            paint,
+                        );
+                    } else {
+                        let physical_radius = border_radius * self.scale_factor;
+                        let radii = ffi::ImpellerRoundingRadii {
+                            top_left: ffi::ImpellerPoint {
+                                x: physical_radius.top_left,
+                                y: physical_radius.top_left,
+                            },
+                            bottom_left: ffi::ImpellerPoint {
+                                x: physical_radius.bottom_left,
+                                y: physical_radius.bottom_left,
+                            },
+                            top_right: ffi::ImpellerPoint {
+                                x: physical_radius.top_right,
+                                y: physical_radius.top_right,
+                            },
+                            bottom_right: ffi::ImpellerPoint {
+                                x: physical_radius.bottom_right,
+                                y: physical_radius.bottom_right,
+                            },
+                        };
+                        ffi::ImpellerDisplayListBuilderDrawRoundedRect(
+                            self.builder,
+                            &impeller_rect as *const _,
+                            &radii as *const _,
+                            paint,
+                        );
                     }
+
+                    Self::release_paint(paint, color_source);
                 }
             }
         }
