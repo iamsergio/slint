@@ -15,6 +15,7 @@ pub type ImpellerTypographyContext = *mut c_void;
 pub type ImpellerParagraph = *mut c_void;
 pub type ImpellerParagraphBuilder = *mut c_void;
 pub type ImpellerParagraphStyle = *mut c_void;
+pub type ImpellerTexture = *mut c_void;
 
 pub type ImpellerCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -134,6 +135,21 @@ pub enum ImpellerTextAlignment {
 pub enum ImpellerTextDirection {
     RTL = 0,
     LTR = 1,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerTextureSampling {
+    NearestNeighbor = 0,
+    Linear = 1,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ImpellerTextureDescriptor {
+    pub pixel_format: ImpellerPixelFormat,
+    pub size: ImpellerISize,
+    pub mip_count: u32,
 }
 
 pub type ImpellerProcAddressCallback =
@@ -291,5 +307,34 @@ unsafe extern "C" {
         builder: ImpellerDisplayListBuilder,
         paragraph: ImpellerParagraph,
         point: *const ImpellerPoint,
+    );
+
+    // Texture
+    pub fn ImpellerTextureCreateWithContentsNew(
+        context: ImpellerContext,
+        descriptor: *const ImpellerTextureDescriptor,
+        contents: *const ImpellerMapping,
+        contents_on_release_user_data: *mut c_void,
+    ) -> ImpellerTexture;
+
+    pub fn ImpellerTextureRetain(texture: ImpellerTexture);
+    pub fn ImpellerTextureRelease(texture: ImpellerTexture);
+
+    // Display list builder - draw textures
+    pub fn ImpellerDisplayListBuilderDrawTexture(
+        builder: ImpellerDisplayListBuilder,
+        texture: ImpellerTexture,
+        point: *const ImpellerPoint,
+        sampling: ImpellerTextureSampling,
+        paint: ImpellerPaint,
+    );
+
+    pub fn ImpellerDisplayListBuilderDrawTextureRect(
+        builder: ImpellerDisplayListBuilder,
+        texture: ImpellerTexture,
+        src_rect: *const ImpellerRect,
+        dst_rect: *const ImpellerRect,
+        sampling: ImpellerTextureSampling,
+        paint: ImpellerPaint,
     );
 }

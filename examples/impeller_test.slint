@@ -6,7 +6,7 @@ export component MainWindow inherits Window {
     width: 800px;
     height: 600px;
     background: #87CEEB;
-    
+
     Rectangle {
         width: 400px;
         height: 300px;
@@ -16,14 +16,25 @@ export component MainWindow inherits Window {
         border-radius: 20px;
         border-width: 4px;
         border-color: #AA0000;
-        
-        transform-origin: { x: self.width / 2, y: self.height / 2 };  
-        transform-rotation: animation-tick() * 1turn / 4s;
+
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        // transform-rotation: animation-tick() * 1turn / 2s; // Continuous rotation
+
 
         Text {
             text: "Impeller Renderer Test";
             color: white;
             font-size: 32px;
         }
+    }
+
+    // Image test
+    Image {
+        source: @image-url("memory/icons/tile_logo.png");
+        width: 128px;
+        height: 128px;
+        x: 20px;
+        y: 20px;
+        image-fit: contain;
     }
 }
