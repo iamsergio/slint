@@ -70,3 +70,4 @@ tools/editor/skia-sources.json
 /demo-images
 
 impeller_install_debug_unopt
+/bin/
