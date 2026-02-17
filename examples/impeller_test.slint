@@ -5,18 +5,21 @@
 export component MainWindow inherits Window {
     width: 800px;
     height: 600px;
-    background: #87CEEB; // Sky blue
+    background: #87CEEB;
     
     Rectangle {
         width: 400px;
         height: 300px;
         x: 200px;
         y: 150px;
-        background: #FF4444; // Red
+        background: #FF4444;
         border-radius: 20px;
         border-width: 4px;
-        border-color: #AA0000; // Dark red
+        border-color: #AA0000;
         
+        transform-origin: { x: self.width / 2, y: self.height / 2 };  
+        transform-rotation: animation-tick() * 1turn / 4s;
+
         Text {
             text: "Impeller Renderer Test";
             color: white;
