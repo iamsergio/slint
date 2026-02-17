@@ -103,14 +103,14 @@ mod xdg_color_scheme;
 pub(crate) mod wasm_input_helper;
 
 cfg_if::cfg_if! {
-    if #[cfg(enable_femtovg_renderer)] {
+    if #[cfg(enable_skia_renderer)] {
+        const DEFAULT_RENDERER_NAME: &str = "Skia";
+    } else if #[cfg(enable_femtovg_renderer)] {
         const DEFAULT_RENDERER_NAME: &str = "FemtoVG";
     } else if #[cfg(enable_impeller_renderer)] {
         const DEFAULT_RENDERER_NAME: &str = "Impeller";
-    } else if #[cfg(enable_skia_renderer)] {
-        const DEFAULT_RENDERER_NAME: &'static str = "Skia";
     } else if #[cfg(feature = "renderer-software")] {
-        const DEFAULT_RENDERER_NAME: &'static str = "Software";
+        const DEFAULT_RENDERER_NAME: &str = "Software";
     } else {
         compile_error!("Please select a feature to build with the winit backend: `renderer-femtovg`, `renderer-skia`, `renderer-skia-opengl`, `renderer-skia-vulkan` or `renderer-software`");
     }
