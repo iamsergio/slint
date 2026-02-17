@@ -224,7 +224,9 @@ impl ImpellerRenderer {
             glutin::config::ConfigTemplateBuilder::new().with_transparency(true);
 
         #[cfg(not(target_os = "macos"))]
-        let config_template_builder = glutin::config::ConfigTemplateBuilder::new();
+        let config_template_builder = glutin::config::ConfigTemplateBuilder::new()
+            .with_stencil_size(8)
+            .with_multisampling(4);
 
         #[cfg(target_family = "windows")]
         let config_template_builder =
@@ -240,7 +242,7 @@ impl ImpellerRenderer {
                     let transparency_check = config.supports_transparency().unwrap_or(false)
                         & !accum.supports_transparency().unwrap_or(false);
 
-                    if transparency_check || config.num_samples() < accum.num_samples() {
+                    if transparency_check || config.num_samples() > accum.num_samples() {
                         config
                     } else {
                         accum
