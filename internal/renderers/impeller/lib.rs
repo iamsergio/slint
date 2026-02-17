@@ -398,6 +398,7 @@ impl ImpellerRenderer {
                 ScaleFactor::new(window_inner.scale_factor()),
                 &window,
                 typography_context,
+                impeller_ctx,
             );
 
             if let Some(window_item_rc) = window_inner.window_item_rc() {

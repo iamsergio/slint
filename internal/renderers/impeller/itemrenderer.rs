@@ -4,10 +4,14 @@
 use std::ffi::CString;
 use std::pin::Pin;
 
+use i_slint_core::graphics::Image;
 use i_slint_core::item_rendering::{
     CachedRenderingData, ItemRenderer, PlainOrStyledText, RenderImage, RenderText,
 };
-use i_slint_core::items::{ItemRc, Layer, Opacity, RenderingResult, TextHorizontalAlignment, TextVerticalAlignment};
+use i_slint_core::items::{
+    ImageFit, ImageRendering, ItemRc, Layer, Opacity, RenderingResult, TextHorizontalAlignment,
+    TextVerticalAlignment,
+};
 use i_slint_core::lengths::{
     LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
     ScaleFactor,
@@ -35,6 +39,7 @@ pub struct ImpellerItemRenderer<'a> {
     scale_factor: ScaleFactor,
     window: &'a i_slint_core::api::Window,
     typography_context: ffi::ImpellerTypographyContext,
+    impeller_context: ffi::ImpellerContext,
 }
 
 impl<'a> ImpellerItemRenderer<'a> {
@@ -43,8 +48,9 @@ impl<'a> ImpellerItemRenderer<'a> {
         scale_factor: ScaleFactor,
         window: &'a i_slint_core::api::Window,
         typography_context: ffi::ImpellerTypographyContext,
+        impeller_context: ffi::ImpellerContext,
     ) -> Self {
-        Self { builder, scale_factor, window, typography_context }
+        Self { builder, scale_factor, window, typography_context, impeller_context }
     }
 
     pub fn clear_background(&mut self, color: &Color) {
@@ -112,6 +118,55 @@ impl<'a> ImpellerItemRenderer<'a> {
             width: physical.size.width,
             height: physical.size.height,
         }
+    }
+
+    /// Create an Impeller texture from RGBA8 pixel data.
+    fn create_texture_from_rgba(
+        &self,
+        rgba_data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> ffi::ImpellerTexture {
+        if self.impeller_context.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let descriptor = ffi::ImpellerTextureDescriptor {
+            pixel_format: ffi::ImpellerPixelFormat::RGBA8888,
+            size: ffi::ImpellerISize { width: width as i64, height: height as i64 },
+            mip_count: 1,
+        };
+
+        let mapping = ffi::ImpellerMapping {
+            data: rgba_data.as_ptr(),
+            length: rgba_data.len() as u64,
+            on_release: None,
+        };
+
+        unsafe {
+            ffi::ImpellerTextureCreateWithContentsNew(
+                self.impeller_context,
+                &descriptor as *const _,
+                &mapping as *const _,
+                std::ptr::null_mut(),
+            )
+        }
+    }
+
+    /// Render a Slint Image into an Impeller texture, returning the texture and its dimensions.
+    fn image_to_texture(&self, image: &Image) -> Option<(ffi::ImpellerTexture, u32, u32)> {
+        let pixel_buffer = image.to_rgba8()?;
+        let width = pixel_buffer.width();
+        let height = pixel_buffer.height();
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let rgba_data = pixel_buffer.as_bytes();
+        let texture = self.create_texture_from_rgba(rgba_data, width, height);
+        if texture.is_null() {
+            return None;
+        }
+        Some((texture, width, height))
     }
 }
 
@@ -275,11 +330,106 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
 
     fn draw_image(
         &mut self,
-        _image: Pin<&dyn RenderImage>,
+        image: Pin<&dyn RenderImage>,
         _self_rc: &ItemRc,
-        _size: LogicalSize,
+        size: LogicalSize,
         _cache: &CachedRenderingData,
     ) {
+        let geometry = LogicalRect::from(size);
+        if geometry.is_empty() {
+            return;
+        }
+
+        let source = image.source();
+        let (texture, src_width, src_height) = match self.image_to_texture(&source) {
+            Some(t) => t,
+            None => return,
+        };
+
+        let sf = self.scale_factor.get();
+        let target_w = size.width * sf;
+        let target_h = size.height * sf;
+        let src_w = src_width as f32;
+        let src_h = src_height as f32;
+
+        // Calculate destination rect based on image-fit
+        let image_fit = image.image_fit();
+        let (dst_x, dst_y, dst_w, dst_h, clip_src) = match image_fit {
+            ImageFit::Fill => (0.0, 0.0, target_w, target_h, None),
+            ImageFit::Contain | ImageFit::Preserve => {
+                let ratio_w = target_w / src_w;
+                let ratio_h = target_h / src_h;
+                let ratio = ratio_w.min(ratio_h);
+                let scaled_w = src_w * ratio;
+                let scaled_h = src_h * ratio;
+                let dx = (target_w - scaled_w) / 2.0;
+                let dy = (target_h - scaled_h) / 2.0;
+                (dx, dy, scaled_w, scaled_h, None)
+            }
+            ImageFit::Cover => {
+                let ratio_w = target_w / src_w;
+                let ratio_h = target_h / src_h;
+                let ratio = ratio_w.max(ratio_h);
+                let scaled_w = src_w * ratio;
+                let scaled_h = src_h * ratio;
+                // Crop from center: compute source rect
+                let visible_src_w = target_w / ratio;
+                let visible_src_h = target_h / ratio;
+                let src_x = (src_w - visible_src_w) / 2.0;
+                let src_y = (src_h - visible_src_h) / 2.0;
+                let src_rect = ffi::ImpellerRect {
+                    x: src_x,
+                    y: src_y,
+                    width: visible_src_w,
+                    height: visible_src_h,
+                };
+                (0.0, 0.0, target_w, target_h, Some(src_rect))
+            }
+            _ => (0.0, 0.0, target_w, target_h, None),
+        };
+
+        let sampling = match image.rendering() {
+            ImageRendering::Pixelated => ffi::ImpellerTextureSampling::NearestNeighbor,
+            _ => ffi::ImpellerTextureSampling::Linear,
+        };
+
+        unsafe {
+            let paint = ffi::ImpellerPaintNew();
+
+            let dst_rect =
+                ffi::ImpellerRect { x: dst_x, y: dst_y, width: dst_w, height: dst_h };
+
+            if let Some(src_rect) = clip_src {
+                ffi::ImpellerDisplayListBuilderDrawTextureRect(
+                    self.builder,
+                    texture,
+                    &src_rect as *const _,
+                    &dst_rect as *const _,
+                    sampling,
+                    paint,
+                );
+            } else {
+                let src_rect = ffi::ImpellerRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: src_w,
+                    height: src_h,
+                };
+                ffi::ImpellerDisplayListBuilderDrawTextureRect(
+                    self.builder,
+                    texture,
+                    &src_rect as *const _,
+                    &dst_rect as *const _,
+                    sampling,
+                    paint,
+                );
+            }
+
+            if !paint.is_null() {
+                ffi::ImpellerPaintRelease(paint);
+            }
+            ffi::ImpellerTextureRelease(texture);
+        }
     }
 
     fn draw_text(
@@ -590,7 +740,24 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         }
     }
 
-    fn draw_image_direct(&mut self, _image: i_slint_core::graphics::Image) {
+    fn draw_image_direct(&mut self, image: i_slint_core::graphics::Image) {
+        let (texture, _width, _height) = match self.image_to_texture(&image) {
+            Some(t) => t,
+            None => return,
+        };
+
+        let point = ffi::ImpellerPoint { x: 0.0, y: 0.0 };
+
+        unsafe {
+            ffi::ImpellerDisplayListBuilderDrawTexture(
+                self.builder,
+                texture,
+                &point as *const _,
+                ffi::ImpellerTextureSampling::Linear,
+                std::ptr::null_mut(),
+            );
+            ffi::ImpellerTextureRelease(texture);
+        }
     }
 
     fn window(&self) -> &i_slint_core::window::WindowInner {
