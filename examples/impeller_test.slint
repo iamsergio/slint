@@ -37,4 +37,46 @@ export component MainWindow inherits Window {
         y: 20px;
         image-fit: contain;
     }
+
+    // Linear gradient test
+    Rectangle {
+        width: 150px;
+        height: 100px;
+        x: 20px;
+        y: 460px;
+        background: @linear-gradient(135deg, #FF0000, #0000FF);
+        border-radius: 10px;
+    }
+
+    // Radial gradient test
+    Rectangle {
+        width: 150px;
+        height: 100px;
+        x: 190px;
+        y: 460px;
+        background: @radial-gradient(circle, #FFFF00, #FF00FF);
+        border-radius: 10px;
+    }
+
+    // Linear gradient with multiple stops
+    Rectangle {
+        width: 150px;
+        height: 100px;
+        x: 360px;
+        y: 460px;
+        background: @linear-gradient(90deg, #FF0000, #00FF00 50%, #0000FF);
+        border-radius: 10px;
+    }
+
+    // Gradient border rectangle
+    Rectangle {
+        width: 150px;
+        height: 100px;
+        x: 530px;
+        y: 460px;
+        background: @linear-gradient(0deg, #00CED1, #FF6347);
+        border-radius: 15px;
+        border-width: 3px;
+        border-color: #333333;
+    }
 }
