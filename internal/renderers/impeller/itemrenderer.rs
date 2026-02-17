@@ -343,7 +343,10 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         }
     }
 
-    fn rotate(&mut self, _angle_in_degrees: f32) {
+    fn rotate(&mut self, angle_in_degrees: f32) {
+        unsafe {
+            ffi::ImpellerDisplayListBuilderRotate(self.builder, angle_in_degrees);
+        }
     }
 
     fn scale(&mut self, x_factor: f32, y_factor: f32) {
