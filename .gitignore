@@ -35,3 +35,4 @@ uv.lock
 
 MODULE.bazel.lock
 impeller_install_debug_unopt
+/bin/
