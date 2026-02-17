@@ -37,6 +37,7 @@ use glutin::{
 pub struct ImpellerRenderer {
     maybe_window_adapter: RefCell<Option<Weak<dyn WindowAdapter>>>,
     impeller_context: RefCell<Option<ffi::ImpellerContext>>,
+    typography_context: RefCell<Option<ffi::ImpellerTypographyContext>>,
     glutin_context: RefCell<Option<glutin::context::PossiblyCurrentContext>>,
     glutin_surface: RefCell<Option<glutin::surface::Surface<glutin::surface::WindowSurface>>>,
     size: Cell<PhysicalWindowSize>,
@@ -47,6 +48,7 @@ impl ImpellerRenderer {
         Self {
             maybe_window_adapter: RefCell::new(None),
             impeller_context: RefCell::new(None),
+            typography_context: RefCell::new(None),
             glutin_context: RefCell::new(None),
             glutin_surface: RefCell::new(None),
             size: Cell::new(PhysicalWindowSize::default()),
@@ -88,12 +90,87 @@ impl ImpellerRenderer {
             return Err("Failed to create Impeller context".to_string().into());
         }
 
+        let typography_context = unsafe { ffi::ImpellerTypographyContextNew() };
+        if typography_context.is_null() {
+            unsafe {
+                ffi::ImpellerContextRelease(impeller_context);
+            }
+            return Err("Failed to create Impeller typography context".to_string().into());
+        }
+
+        Self::register_fonts_with_impeller(typography_context);
+
         *self.impeller_context.borrow_mut() = Some(impeller_context);
+        *self.typography_context.borrow_mut() = Some(typography_context);
         *self.glutin_context.borrow_mut() = Some(glutin_context);
         *self.glutin_surface.borrow_mut() = Some(glutin_surface);
         self.size.set(size);
 
         Ok(())
+    }
+
+    fn register_fonts_with_impeller(typography_context: ffi::ImpellerTypographyContext) {
+        use i_slint_common::sharedfontique::fontique;
+
+        let mut collection = sharedfontique::get_collection();
+
+        // Register default fonts (from SLINT_DEFAULT_FONT env var)
+        for font in collection.default_fonts.clone().values() {
+            Self::register_single_font(&mut collection, typography_context, font);
+        }
+
+        // Register the default sans-serif font (the primary font used for text)
+        let default_request = i_slint_core::graphics::FontRequest::default();
+        if let Some(font) = default_request.query_fontique() {
+            Self::register_single_font(&mut collection, typography_context, &font);
+        }
+    }
+
+    fn register_single_font(
+        collection: &mut sharedfontique::Collection,
+        typography_context: ffi::ImpellerTypographyContext,
+        font: &i_slint_common::sharedfontique::fontique::QueryFont,
+    ) {
+        let data = font.blob.data();
+        let family_name = collection
+            .family_name(font.family.0)
+            .map(|s| s.to_string());
+        let family_c = family_name
+            .as_ref()
+            .and_then(|n| std::ffi::CString::new(n.as_str()).ok());
+        let family_ptr = family_c
+            .as_ref()
+            .map(|c| c.as_ptr())
+            .unwrap_or(std::ptr::null());
+
+        // For TTC files, we need to extract the individual face.
+        // Impeller's RegisterFont expects a single-font file.
+        // Use ttf-parser to extract the face data boundaries.
+        if font.index > 0 {
+            // For fonts with index > 0 (TTC collections), skip for now
+            // as Impeller may not handle TTC indices correctly.
+            return;
+        }
+
+        // Copy font data into a leaked allocation so the pointer remains valid
+        // for the lifetime of the typography context. Impeller stores the pointer
+        // (with on_release=None it does not copy the data).
+        let owned_data = data.to_vec().into_boxed_slice();
+        let leaked = Box::leak(owned_data);
+
+        let mapping = ffi::ImpellerMapping {
+            data: leaked.as_ptr(),
+            length: leaked.len() as u64,
+            on_release: None,
+        };
+        unsafe {
+            ffi::ImpellerTypographyContextRegisterFont(
+                typography_context,
+                &mapping as *const _,
+                std::ptr::null_mut(),
+                family_ptr,
+            );
+        }
     }
 
     unsafe extern "C" fn gl_proc_address_callback(
@@ -310,11 +387,15 @@ impl ImpellerRenderer {
 
         let window_inner = WindowInner::from_pub(&window);
 
+        let typography_ctx = self.typography_context.borrow();
+        let typography_context = typography_ctx.unwrap_or(std::ptr::null_mut());
+
         window_inner.draw_contents(|components| {
             let mut item_renderer = itemrenderer::ImpellerItemRenderer::new(
                 display_list_builder,
                 ScaleFactor::new(window_inner.scale_factor()),
                 &window,
+                typography_context,
             );
 
             if let Some(window_item_rc) = window_inner.window_item_rc() {
@@ -377,6 +458,11 @@ impl ImpellerRenderer {
     }
 
     pub fn suspend(&self) {
+        if let Some(context) = self.typography_context.borrow_mut().take() {
+            unsafe {
+                ffi::ImpellerTypographyContextRelease(context);
+            }
+        }
         if let Some(context) = self.impeller_context.borrow_mut().take() {
             unsafe {
                 ffi::ImpellerContextRelease(context);

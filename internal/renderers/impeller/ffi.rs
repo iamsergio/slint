@@ -11,6 +11,20 @@ pub type ImpellerSurface = *mut c_void;
 pub type ImpellerDisplayListBuilder = *mut c_void;
 pub type ImpellerDisplayList = *mut c_void;
 pub type ImpellerPaint = *mut c_void;
+pub type ImpellerTypographyContext = *mut c_void;
+pub type ImpellerParagraph = *mut c_void;
+pub type ImpellerParagraphBuilder = *mut c_void;
+pub type ImpellerParagraphStyle = *mut c_void;
+
+pub type ImpellerCallback = Option<unsafe extern "C" fn(*mut c_void)>;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ImpellerMapping {
+    pub data: *const u8,
+    pub length: u64,
+    pub on_release: ImpellerCallback,
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -81,6 +95,45 @@ pub enum ImpellerDrawStyle {
 pub enum ImpellerClipOperation {
     Difference = 0,
     Intersect = 1,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerFontWeight {
+    W100 = 0,
+    W200 = 1,
+    W300 = 2,
+    W400 = 3,
+    W500 = 4,
+    W600 = 5,
+    W700 = 6,
+    W800 = 7,
+    W900 = 8,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerFontStyle {
+    Normal = 0,
+    Italic = 1,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerTextAlignment {
+    Left = 0,
+    Right = 1,
+    Center = 2,
+    Justify = 3,
+    Start = 4,
+    End = 5,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerTextDirection {
+    RTL = 0,
+    LTR = 1,
 }
 
 pub type ImpellerProcAddressCallback =
@@ -172,4 +225,71 @@ unsafe extern "C" {
     pub fn ImpellerDisplayListBuilderRelease(builder: ImpellerDisplayListBuilder);
 
     pub fn ImpellerDisplayListRelease(display_list: ImpellerDisplayList);
+
+    // Typography
+    pub fn ImpellerTypographyContextNew() -> ImpellerTypographyContext;
+    pub fn ImpellerTypographyContextRelease(context: ImpellerTypographyContext);
+    pub fn ImpellerTypographyContextRegisterFont(
+        context: ImpellerTypographyContext,
+        contents: *const ImpellerMapping,
+        user_data: *mut c_void,
+        family_name_alias: *const c_char,
+    ) -> bool;
+
+    // Paragraph style
+    pub fn ImpellerParagraphStyleNew() -> ImpellerParagraphStyle;
+    pub fn ImpellerParagraphStyleRelease(style: ImpellerParagraphStyle);
+    pub fn ImpellerParagraphStyleSetForeground(style: ImpellerParagraphStyle, paint: ImpellerPaint);
+    pub fn ImpellerParagraphStyleSetFontSize(style: ImpellerParagraphStyle, size: f32);
+    pub fn ImpellerParagraphStyleSetFontFamily(
+        style: ImpellerParagraphStyle,
+        family: *const c_char,
+    );
+    pub fn ImpellerParagraphStyleSetFontWeight(
+        style: ImpellerParagraphStyle,
+        weight: ImpellerFontWeight,
+    );
+    pub fn ImpellerParagraphStyleSetFontStyle(
+        style: ImpellerParagraphStyle,
+        font_style: ImpellerFontStyle,
+    );
+    pub fn ImpellerParagraphStyleSetTextAlignment(
+        style: ImpellerParagraphStyle,
+        alignment: ImpellerTextAlignment,
+    );
+    pub fn ImpellerParagraphStyleSetTextDirection(
+        style: ImpellerParagraphStyle,
+        direction: ImpellerTextDirection,
+    );
+
+    // Paragraph builder
+    pub fn ImpellerParagraphBuilderNew(
+        context: ImpellerTypographyContext,
+    ) -> ImpellerParagraphBuilder;
+    pub fn ImpellerParagraphBuilderRelease(builder: ImpellerParagraphBuilder);
+    pub fn ImpellerParagraphBuilderPushStyle(
+        builder: ImpellerParagraphBuilder,
+        style: ImpellerParagraphStyle,
+    );
+    pub fn ImpellerParagraphBuilderPopStyle(builder: ImpellerParagraphBuilder);
+    pub fn ImpellerParagraphBuilderAddText(
+        builder: ImpellerParagraphBuilder,
+        data: *const u8,
+        length: u32,
+    );
+    pub fn ImpellerParagraphBuilderBuildParagraphNew(
+        builder: ImpellerParagraphBuilder,
+        width: f32,
+    ) -> ImpellerParagraph;
+
+    // Paragraph
+    pub fn ImpellerParagraphRelease(paragraph: ImpellerParagraph);
+    pub fn ImpellerParagraphGetHeight(paragraph: ImpellerParagraph) -> f32;
+
+    // Display list builder - draw paragraph
+    pub fn ImpellerDisplayListBuilderDrawParagraph(
+        builder: ImpellerDisplayListBuilder,
+        paragraph: ImpellerParagraph,
+        point: *const ImpellerPoint,
+    );
 }

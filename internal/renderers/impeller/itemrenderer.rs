@@ -1,25 +1,40 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+use std::ffi::CString;
 use std::pin::Pin;
 
-use i_slint_core::graphics::euclid;
 use i_slint_core::item_rendering::{
-    CachedRenderingData, ItemRenderer, RenderImage, RenderText,
+    CachedRenderingData, ItemRenderer, PlainOrStyledText, RenderImage, RenderText,
 };
-use i_slint_core::items::{ItemRc, Layer, Opacity, RenderingResult};
+use i_slint_core::items::{ItemRc, Layer, Opacity, RenderingResult, TextHorizontalAlignment, TextVerticalAlignment};
 use i_slint_core::lengths::{
     LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
-    PhysicalPx, ScaleFactor,
+    ScaleFactor,
 };
 use i_slint_core::{Brush, Color};
 
 use crate::ffi;
 
+fn font_weight_to_impeller(weight: Option<i32>) -> ffi::ImpellerFontWeight {
+    match weight.unwrap_or(400) {
+        w if w <= 150 => ffi::ImpellerFontWeight::W100,
+        w if w <= 250 => ffi::ImpellerFontWeight::W200,
+        w if w <= 350 => ffi::ImpellerFontWeight::W300,
+        w if w <= 450 => ffi::ImpellerFontWeight::W400,
+        w if w <= 550 => ffi::ImpellerFontWeight::W500,
+        w if w <= 650 => ffi::ImpellerFontWeight::W600,
+        w if w <= 750 => ffi::ImpellerFontWeight::W700,
+        w if w <= 850 => ffi::ImpellerFontWeight::W800,
+        _ => ffi::ImpellerFontWeight::W900,
+    }
+}
+
 pub struct ImpellerItemRenderer<'a> {
     builder: ffi::ImpellerDisplayListBuilder,
     scale_factor: ScaleFactor,
     window: &'a i_slint_core::api::Window,
+    typography_context: ffi::ImpellerTypographyContext,
 }
 
 impl<'a> ImpellerItemRenderer<'a> {
@@ -27,8 +42,9 @@ impl<'a> ImpellerItemRenderer<'a> {
         builder: ffi::ImpellerDisplayListBuilder,
         scale_factor: ScaleFactor,
         window: &'a i_slint_core::api::Window,
+        typography_context: ffi::ImpellerTypographyContext,
     ) -> Self {
-        Self { builder, scale_factor, window }
+        Self { builder, scale_factor, window, typography_context }
     }
 
     pub fn clear_background(&mut self, color: &Color) {
@@ -75,6 +91,16 @@ impl<'a> ImpellerItemRenderer<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    fn color_to_impeller(&self, color: &Color) -> ffi::ImpellerColor {
+        ffi::ImpellerColor {
+            red: color.red() as f32 / 255.0,
+            green: color.green() as f32 / 255.0,
+            blue: color.blue() as f32 / 255.0,
+            alpha: color.alpha() as f32 / 255.0,
+            color_space: ffi::ImpellerColorSpace::SRGB,
         }
     }
 
@@ -258,11 +284,133 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
 
     fn draw_text(
         &mut self,
-        _text: Pin<&dyn RenderText>,
-        _self_rc: &ItemRc,
-        _size: LogicalSize,
+        text: Pin<&dyn RenderText>,
+        self_rc: &ItemRc,
+        size: LogicalSize,
         _cache: &CachedRenderingData,
     ) {
+        if self.typography_context.is_null() {
+            return;
+        }
+
+        let plain_text = text.text();
+        let string: std::borrow::Cow<'_, str> = match &plain_text {
+            PlainOrStyledText::Plain(s) => s.as_str().into(),
+            PlainOrStyledText::Styled(styled) => {
+                i_slint_core::styled_text::get_raw_text(styled)
+            }
+        };
+        if string.is_empty() {
+            return;
+        }
+
+        let Some(color) = self.brush_to_color(&text.color()) else { return };
+        let (h_align, v_align) = text.alignment();
+        let font_request = text.font_request(self_rc);
+        let sf = self.scale_factor.get();
+
+        let font_size = font_request
+            .pixel_size
+            .map(|s| s.get() * sf)
+            .unwrap_or(16.0 * sf);
+
+        // Resolve the font family name. When no family is specified, query fontique
+        // for the default sans-serif font (matching what Skia/FemtoVG do).
+        let resolved_family: Option<String> = if font_request.family.is_some() {
+            font_request.family.as_ref().map(|f| f.to_string())
+        } else {
+            font_request.query_fontique().and_then(|font| {
+                let mut collection = i_slint_common::sharedfontique::get_collection();
+                collection.family_name(font.family.0).map(|s| s.to_string())
+            })
+        };
+
+        unsafe {
+            let paint = ffi::ImpellerPaintNew();
+            if paint.is_null() {
+                return;
+            }
+            ffi::ImpellerPaintSetColor(paint, &color as *const _);
+
+            let style = ffi::ImpellerParagraphStyleNew();
+            if style.is_null() {
+                ffi::ImpellerPaintRelease(paint);
+                return;
+            }
+
+            ffi::ImpellerParagraphStyleSetForeground(style, paint);
+            ffi::ImpellerParagraphStyleSetFontSize(style, font_size);
+
+            if let Some(ref family) = resolved_family {
+                if !family.is_empty() {
+                    if let Ok(c_family) = CString::new(family.as_str()) {
+                        ffi::ImpellerParagraphStyleSetFontFamily(style, c_family.as_ptr());
+                    }
+                }
+            }
+
+            ffi::ImpellerParagraphStyleSetFontWeight(
+                style,
+                font_weight_to_impeller(font_request.weight),
+            );
+
+            if font_request.italic {
+                ffi::ImpellerParagraphStyleSetFontStyle(style, ffi::ImpellerFontStyle::Italic);
+            }
+
+            let imp_align = match h_align {
+                TextHorizontalAlignment::Center => ffi::ImpellerTextAlignment::Center,
+                TextHorizontalAlignment::Right => ffi::ImpellerTextAlignment::Right,
+                _ => ffi::ImpellerTextAlignment::Left,
+            };
+            ffi::ImpellerParagraphStyleSetTextAlignment(style, imp_align);
+
+            let para_builder = ffi::ImpellerParagraphBuilderNew(self.typography_context);
+            if para_builder.is_null() {
+                ffi::ImpellerParagraphStyleRelease(style);
+                ffi::ImpellerPaintRelease(paint);
+                return;
+            }
+
+            ffi::ImpellerParagraphBuilderPushStyle(para_builder, style);
+
+            let text_bytes = string.as_bytes();
+            ffi::ImpellerParagraphBuilderAddText(
+                para_builder,
+                text_bytes.as_ptr(),
+                text_bytes.len() as u32,
+            );
+
+            ffi::ImpellerParagraphBuilderPopStyle(para_builder);
+
+            let layout_width = size.width * sf;
+            let paragraph =
+                ffi::ImpellerParagraphBuilderBuildParagraphNew(para_builder, layout_width);
+
+            if !paragraph.is_null() {
+                let para_height = ffi::ImpellerParagraphGetHeight(paragraph);
+                let physical_height = size.height * sf;
+
+                let y_offset = match v_align {
+                    TextVerticalAlignment::Center => (physical_height - para_height) / 2.0,
+                    TextVerticalAlignment::Bottom => physical_height - para_height,
+                    _ => 0.0,
+                };
+                let y_offset = y_offset.max(0.0);
+
+                let point = ffi::ImpellerPoint { x: 0.0, y: y_offset };
+                ffi::ImpellerDisplayListBuilderDrawParagraph(
+                    self.builder,
+                    paragraph,
+                    &point as *const _,
+                );
+                ffi::ImpellerParagraphRelease(paragraph);
+            }
+
+            ffi::ImpellerParagraphBuilderRelease(para_builder);
+            ffi::ImpellerParagraphStyleRelease(style);
+            ffi::ImpellerPaintRelease(paint);
+        }
     }
 
     fn draw_text_input(
@@ -381,7 +529,65 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
     ) {
     }
 
-    fn draw_string(&mut self, _string: &str, _color: Color) {
+    fn draw_string(&mut self, string: &str, color: Color) {
+        if self.typography_context.is_null() || string.is_empty() {
+            return;
+        }
+
+        let sf = self.scale_factor.get();
+        let impeller_color = self.color_to_impeller(&color);
+
+        unsafe {
+            let paint = ffi::ImpellerPaintNew();
+            if paint.is_null() {
+                return;
+            }
+            ffi::ImpellerPaintSetColor(paint, &impeller_color as *const _);
+
+            let style = ffi::ImpellerParagraphStyleNew();
+            if style.is_null() {
+                ffi::ImpellerPaintRelease(paint);
+                return;
+            }
+
+            ffi::ImpellerParagraphStyleSetForeground(style, paint);
+            ffi::ImpellerParagraphStyleSetFontSize(style, 16.0 * sf);
+
+            let para_builder = ffi::ImpellerParagraphBuilderNew(self.typography_context);
+            if para_builder.is_null() {
+                ffi::ImpellerParagraphStyleRelease(style);
+                ffi::ImpellerPaintRelease(paint);
+                return;
+            }
+
+            ffi::ImpellerParagraphBuilderPushStyle(para_builder, style);
+
+            let text_bytes = string.as_bytes();
+            ffi::ImpellerParagraphBuilderAddText(
+                para_builder,
+                text_bytes.as_ptr(),
+                text_bytes.len() as u32,
+            );
+
+            ffi::ImpellerParagraphBuilderPopStyle(para_builder);
+
+            let paragraph =
+                ffi::ImpellerParagraphBuilderBuildParagraphNew(para_builder, f32::MAX);
+
+            if !paragraph.is_null() {
+                let point = ffi::ImpellerPoint { x: 0.0, y: 0.0 };
+                ffi::ImpellerDisplayListBuilderDrawParagraph(
+                    self.builder,
+                    paragraph,
+                    &point as *const _,
+                );
+                ffi::ImpellerParagraphRelease(paragraph);
+            }
+
+            ffi::ImpellerParagraphBuilderRelease(para_builder);
+            ffi::ImpellerParagraphStyleRelease(style);
+            ffi::ImpellerPaintRelease(paint);
+        }
     }
 
     fn draw_image_direct(&mut self, _image: i_slint_core::graphics::Image) {
