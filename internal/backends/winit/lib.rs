@@ -128,14 +128,14 @@ mod xdg_desktop_settings;
 pub(crate) mod wasm_input_helper;
 
 core::cfg_select! {
+    enable_skia_renderer => {
+        const DEFAULT_RENDERER_NAME: &str = "Skia";
+    }
     enable_femtovg_renderer => {
         const DEFAULT_RENDERER_NAME: &str = "FemtoVG";
     }
     enable_impeller_renderer => {
         const DEFAULT_RENDERER_NAME: &str = "Impeller";
-    }
-    enable_skia_renderer => {
-        const DEFAULT_RENDERER_NAME: &str = "Skia";
     }
     feature = "renderer-software" => {
         const DEFAULT_RENDERER_NAME: &str = "Software";
