@@ -40,6 +40,8 @@ pub struct ImpellerItemRenderer<'a> {
     window: &'a i_slint_core::api::Window,
     typography_context: ffi::ImpellerTypographyContext,
     impeller_context: ffi::ImpellerContext,
+    current_opacity: f32,
+    opacity_stack: Vec<f32>,
 }
 
 impl<'a> ImpellerItemRenderer<'a> {
@@ -50,7 +52,7 @@ impl<'a> ImpellerItemRenderer<'a> {
         typography_context: ffi::ImpellerTypographyContext,
         impeller_context: ffi::ImpellerContext,
     ) -> Self {
-        Self { builder, scale_factor, window, typography_context, impeller_context }
+        Self { builder, scale_factor, window, typography_context, impeller_context, current_opacity: 1.0, opacity_stack: Vec::new() }
     }
 
     pub fn clear_background(&mut self, color: &Color) {
@@ -162,15 +164,21 @@ impl<'a> ImpellerItemRenderer<'a> {
 
         match brush {
             Brush::SolidColor(color) => {
-                let c = self.color_to_impeller(color);
+                let mut c = self.color_to_impeller(color);
+                c.alpha *= self.current_opacity;
                 unsafe { ffi::ImpellerPaintSetColor(paint, &c as *const _) };
                 Some((paint, None))
             }
             Brush::LinearGradient(gradient) => {
-                let (colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
+                let (mut colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
                 if colors.is_empty() {
                     unsafe { ffi::ImpellerPaintRelease(paint) };
                     return None;
+                }
+                if self.current_opacity < 1.0 {
+                    for c in &mut colors {
+                        c.alpha *= self.current_opacity;
+                    }
                 }
 
                 let (start, end) =
@@ -201,10 +209,15 @@ impl<'a> ImpellerItemRenderer<'a> {
                 Some((paint, Some(color_source)))
             }
             Brush::RadialGradient(gradient) => {
-                let (colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
+                let (mut colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
                 if colors.is_empty() {
                     unsafe { ffi::ImpellerPaintRelease(paint) };
                     return None;
+                }
+                if self.current_opacity < 1.0 {
+                    for c in &mut colors {
+                        c.alpha *= self.current_opacity;
+                    }
                 }
 
                 let cx = rect.x + rect.width / 2.0;
@@ -234,10 +247,15 @@ impl<'a> ImpellerItemRenderer<'a> {
                 Some((paint, Some(color_source)))
             }
             Brush::ConicGradient(gradient) => {
-                let (colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
+                let (mut colors, positions) = self.gradient_stops_to_impeller(gradient.stops());
                 if colors.is_empty() {
                     unsafe { ffi::ImpellerPaintRelease(paint) };
                     return None;
+                }
+                if self.current_opacity < 1.0 {
+                    for c in &mut colors {
+                        c.alpha *= self.current_opacity;
+                    }
                 }
 
                 let cx = rect.x + rect.width / 2.0;
@@ -579,6 +597,16 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
 
         unsafe {
             let paint = ffi::ImpellerPaintNew();
+            if self.current_opacity < 1.0 && !paint.is_null() {
+                let color = ffi::ImpellerColor {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 1.0,
+                    alpha: self.current_opacity,
+                    color_space: ffi::ImpellerColorSpace::SRGB,
+                };
+                ffi::ImpellerPaintSetColor(paint, &color as *const _);
+            }
 
             let dst_rect =
                 ffi::ImpellerRect { x: dst_x, y: dst_y, width: dst_w, height: dst_h };
@@ -638,7 +666,8 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
             return;
         }
 
-        let Some(color) = self.brush_to_color(&text.color()) else { return };
+        let Some(mut color) = self.brush_to_color(&text.color()) else { return };
+        color.alpha *= self.current_opacity;
         let (h_align, v_align) = text.alignment();
         let font_request = text.font_request(self_rc);
         let sf = self.scale_factor.get();
@@ -773,11 +802,59 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
 
     fn visit_opacity(
         &mut self,
-        _opacity_item: Pin<&Opacity>,
-        _self_rc: &ItemRc,
+        opacity_item: Pin<&Opacity>,
+        item_rc: &ItemRc,
         _size: LogicalSize,
     ) -> RenderingResult {
-        RenderingResult::ContinueRenderingChildren
+        let opacity = opacity_item.opacity();
+        if Opacity::need_layer(item_rc, opacity) {
+            let window_size = self.window.size();
+            let bounds = ffi::ImpellerRect {
+                x: 0.0,
+                y: 0.0,
+                width: window_size.width as f32,
+                height: window_size.height as f32,
+            };
+
+            unsafe {
+                let paint = ffi::ImpellerPaintNew();
+                let color = ffi::ImpellerColor {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 1.0,
+                    alpha: opacity,
+                    color_space: ffi::ImpellerColorSpace::SRGB,
+                };
+                ffi::ImpellerPaintSetColor(paint, &color as *const _);
+                ffi::ImpellerDisplayListBuilderSaveLayer(
+                    self.builder,
+                    &bounds as *const _,
+                    paint,
+                    std::ptr::null_mut(),
+                );
+                ffi::ImpellerPaintRelease(paint);
+            }
+
+            let saved_opacity = self.current_opacity;
+            self.current_opacity = 1.0;
+
+            let window_adapter =
+                i_slint_core::window::WindowInner::from_pub(self.window).window_adapter();
+            i_slint_core::item_rendering::render_item_children(
+                self,
+                item_rc.item_tree(),
+                item_rc.index() as isize,
+                &window_adapter,
+            );
+
+            self.current_opacity = saved_opacity;
+            unsafe { ffi::ImpellerDisplayListBuilderRestore(self.builder) };
+
+            RenderingResult::ContinueRenderingWithoutChildren
+        } else {
+            self.apply_opacity(opacity);
+            RenderingResult::ContinueRenderingChildren
+        }
     }
 
     fn visit_layer(
@@ -837,16 +914,21 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         }
     }
 
-    fn apply_opacity(&mut self, _opacity: f32) {
+    fn apply_opacity(&mut self, opacity: f32) {
+        self.current_opacity *= opacity;
     }
 
     fn save_state(&mut self) {
+        self.opacity_stack.push(self.current_opacity);
         unsafe {
             ffi::ImpellerDisplayListBuilderSave(self.builder);
         }
     }
 
     fn restore_state(&mut self) {
+        if let Some(opacity) = self.opacity_stack.pop() {
+            self.current_opacity = opacity;
+        }
         unsafe {
             ffi::ImpellerDisplayListBuilderRestore(self.builder);
         }
@@ -869,7 +951,8 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         }
 
         let sf = self.scale_factor.get();
-        let impeller_color = self.color_to_impeller(&color);
+        let mut impeller_color = self.color_to_impeller(&color);
+        impeller_color.alpha *= self.current_opacity;
 
         unsafe {
             let paint = ffi::ImpellerPaintNew();

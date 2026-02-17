@@ -212,6 +212,13 @@ unsafe extern "C" {
 
     pub fn ImpellerDisplayListBuilderSave(builder: ImpellerDisplayListBuilder);
 
+    pub fn ImpellerDisplayListBuilderSaveLayer(
+        builder: ImpellerDisplayListBuilder,
+        bounds: *const ImpellerRect,
+        paint: ImpellerPaint,
+        backdrop: *mut c_void,
+    );
+
     pub fn ImpellerDisplayListBuilderRestore(builder: ImpellerDisplayListBuilder);
 
     pub fn ImpellerDisplayListBuilderTranslate(
