@@ -650,17 +650,35 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
             _ => ffi::ImpellerTextureSampling::Linear,
         };
 
+        // Apply colorize if set
+        let colorize_brush = image.colorize();
+        let mut color_filter: ffi::ImpellerColorFilter = std::ptr::null_mut();
+
         unsafe {
             let paint = ffi::ImpellerPaintNew();
-            if self.current_opacity < 1.0 && !paint.is_null() {
-                let color = ffi::ImpellerColor {
-                    red: 1.0,
-                    green: 1.0,
-                    blue: 1.0,
-                    alpha: self.current_opacity,
-                    color_space: ffi::ImpellerColorSpace::SRGB,
-                };
-                ffi::ImpellerPaintSetColor(paint, &color as *const _);
+            if !paint.is_null() {
+                if self.current_opacity < 1.0 {
+                    let color = ffi::ImpellerColor {
+                        red: 1.0,
+                        green: 1.0,
+                        blue: 1.0,
+                        alpha: self.current_opacity,
+                        color_space: ffi::ImpellerColorSpace::SRGB,
+                    };
+                    ffi::ImpellerPaintSetColor(paint, &color as *const _);
+                }
+
+                if !colorize_brush.is_transparent() {
+                    if let Some(c) = self.brush_to_color(&colorize_brush) {
+                        color_filter = ffi::ImpellerColorFilterCreateBlendNew(
+                            &c as *const _,
+                            ffi::ImpellerBlendMode::SourceIn,
+                        );
+                        if !color_filter.is_null() {
+                            ffi::ImpellerPaintSetColorFilter(paint, color_filter);
+                        }
+                    }
+                }
             }
 
             let dst_rect =
@@ -692,6 +710,9 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
                 );
             }
 
+            if !color_filter.is_null() {
+                ffi::ImpellerColorFilterRelease(color_filter);
+            }
             if !paint.is_null() {
                 ffi::ImpellerPaintRelease(paint);
             }

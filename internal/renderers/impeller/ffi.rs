@@ -17,6 +17,7 @@ pub type ImpellerParagraphBuilder = *mut c_void;
 pub type ImpellerParagraphStyle = *mut c_void;
 pub type ImpellerTexture = *mut c_void;
 pub type ImpellerColorSource = *mut c_void;
+pub type ImpellerColorFilter = *mut c_void;
 
 pub type ImpellerCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -82,6 +83,41 @@ pub struct ImpellerColor {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ImpellerPixelFormat {
     RGBA8888 = 0,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ImpellerBlendMode {
+    Clear = 0,
+    Source = 1,
+    Destination = 2,
+    SourceOver = 3,
+    DestinationOver = 4,
+    SourceIn = 5,
+    DestinationIn = 6,
+    SourceOut = 7,
+    DestinationOut = 8,
+    SourceATop = 9,
+    DestinationATop = 10,
+    Xor = 11,
+    Plus = 12,
+    Modulate = 13,
+    Screen = 14,
+    Overlay = 15,
+    Darken = 16,
+    Lighten = 17,
+    ColorDodge = 18,
+    ColorBurn = 19,
+    HardLight = 20,
+    SoftLight = 21,
+    Difference = 22,
+    Exclusion = 23,
+    Multiply = 24,
+    Hue = 25,
+    Saturation = 26,
+    Color = 27,
+    Luminosity = 28,
 }
 
 #[repr(u32)]
@@ -411,5 +447,18 @@ unsafe extern "C" {
         dst_rect: *const ImpellerRect,
         sampling: ImpellerTextureSampling,
         paint: ImpellerPaint,
+    );
+
+    // Color filter
+    pub fn ImpellerColorFilterCreateBlendNew(
+        color: *const ImpellerColor,
+        blend_mode: ImpellerBlendMode,
+    ) -> ImpellerColorFilter;
+
+    pub fn ImpellerColorFilterRelease(color_filter: ImpellerColorFilter);
+
+    pub fn ImpellerPaintSetColorFilter(
+        paint: ImpellerPaint,
+        color_filter: ImpellerColorFilter,
     );
 }
