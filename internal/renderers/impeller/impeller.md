@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Slint renderer backed by Flutter's [Impeller](https://github.com/flutter/engine/tree/main/impeller) graphics engine, linked via its C API (`libimpeller.so`). Currently supports rectangles, rounded rects, borders, text rendering, and transforms. Images, paths, box shadows, opacity compositing, and text input are not yet implemented.
+A Slint renderer backed by Flutter's [Impeller](https://github.com/flutter/engine/tree/main/impeller) graphics engine, linked via its C API (`libimpeller.so`). Currently supports rectangles, rounded rects, borders, text rendering, transforms, images (all ImageFit modes, SVG via resvg rasterization), and gradients (linear, radial, conic/sweep). Opacity compositing, paths, box shadows, and text input are not yet implemented.
 
 ## Build & Run
 
@@ -103,25 +103,33 @@ Per-frame drawing visitor, wraps an `ImpellerDisplayListBuilder`.
 - `draw_border_rectangle` - fill + stroke, supports rounded corners via `ImpellerRoundingRadii`
 - `draw_text` - full paragraph layout via Impeller typography (font family, size, weight, style, alignment)
 - `draw_string` - debug text at 16px
+- `draw_image` — texture from `image_to_texture()`/`create_texture_from_rgba()`, ImageFit (Fill, Contain, Preserve, Cover), ImageRendering (Pixelated/Linear) via `ImpellerDisplayListBuilderDrawTextureRect`
+- `draw_image_direct` — texture at origin via `ImpellerDisplayListBuilderDrawTexture`
+- `setup_paint_for_brush` — SolidColor, LinearGradient (angle-based), RadialGradient, ConicGradient (as sweep)
 - `combine_clip` - `ClipRect` with `Intersect`
 - `translate`, `rotate`, `scale` - builder transform calls
 - `save_state` / `restore_state` - builder save/restore stack
+- `visit_opacity` — `SaveLayer` with accumulated alpha paint, or inline `apply_opacity` when no layer needed
+- `apply_opacity` — multiplies `current_opacity` into all subsequent draw calls
+
+**Partial (missing sub-features):**
+- `draw_image` - `colorize`, `source_clip`, `alignment`, `tiling` properties not handled
+- `combine_clip` - ignores `border_radius` and `border_width` (rectangular clip only)
 
 **Stubbed (empty, no-op):**
-- `draw_image`, `draw_image_direct`, `draw_cached_pixmap`
+- `draw_cached_pixmap`
 - `draw_text_input`
 - `draw_path`
 - `draw_box_shadow`
-- `visit_opacity`, `visit_layer` (return `ContinueRenderingChildren`)
-- `apply_opacity`
+- `visit_layer` (returns `ContinueRenderingChildren`)
 
 ### FFI Bindings (`ffi.rs`)
 
 Manual bindings (not bindgen). All Impeller objects are opaque `*mut c_void` handles with Retain/Release reference counting.
 
-**Handle types:** `ImpellerContext`, `ImpellerSurface`, `ImpellerDisplayListBuilder`, `ImpellerDisplayList`, `ImpellerPaint`, `ImpellerTypographyContext`, `ImpellerParagraphStyle`, `ImpellerParagraphBuilder`, `ImpellerParagraph`
+**Handle types:** `ImpellerContext`, `ImpellerSurface`, `ImpellerDisplayListBuilder`, `ImpellerDisplayList`, `ImpellerPaint`, `ImpellerTypographyContext`, `ImpellerParagraphStyle`, `ImpellerParagraphBuilder`, `ImpellerParagraph`, `ImpellerTexture`, `ImpellerColorSource`
 
-**Structs:** `ImpellerRect{x,y,width,height: f32}`, `ImpellerISize{width,height: i64}`, `ImpellerPoint{x,y: f32}`, `ImpellerRoundingRadii{top_left,bottom_left,top_right,bottom_right: ImpellerPoint}`, `ImpellerColor{red,green,blue,alpha: f32, color_space}`, `ImpellerMapping{data,length,on_release}` (for font data)
+**Structs:** `ImpellerRect{x,y,width,height: f32}`, `ImpellerISize{width,height: i64}`, `ImpellerPoint{x,y: f32}`, `ImpellerRoundingRadii{top_left,bottom_left,top_right,bottom_right: ImpellerPoint}`, `ImpellerColor{red,green,blue,alpha: f32, color_space}`, `ImpellerMapping{data,length,on_release}` (for font data), `ImpellerTextureDescriptor{pixel_format, size, mip_count}`
 
 **Version:** `IMPELLER_VERSION = (1<<29)|(1<<22)|(4<<12)|0` (v1.1.4.0)
 
@@ -155,16 +163,14 @@ The font family name is resolved from fontique's collection. When `draw_text` re
 
 ## What Needs Implementing
 
-| Feature | Impeller C API needed | Notes |
+| Feature | Priority | Notes |
 |---|---|---|
-| Images | `ImpellerDisplayListBuilderDrawTexture` or equivalent | Need to create `ImpellerTexture` from pixel data |
-| Paths | `ImpellerPathBuilderNew`, `LineTo`, `CubicCurveTo`, etc. | Impeller has a full path builder API |
-| Box shadows | No direct API; draw blurred rounded rect | May need `ImpellerPaintSetMaskFilter` or manual approach |
-| Opacity | `ImpellerDisplayListBuilderSaveLayer` | Save layer with alpha paint |
-| Text input | Reuse `draw_text` logic + cursor/selection rects | Cursor and selection drawing on top of text |
-| Gradients | `ImpellerColorSourceCreateLinearGradientNew` etc. | Impeller has linear/radial/conical/sweep gradient APIs |
-| Clipping with border radius | `ImpellerDisplayListBuilderClipRoundedRect` | Currently only rectangular clips |
-| Snapshots | Read back FBO pixels | `glReadPixels` or Impeller equivalent |
+| Opacity | P0 | `SaveLayer` + accumulated alpha in paint |
+| Rounded rect clipping | P1 | `ClipRoundedRect` (combine_clip ignores border_radius) |
+| Box shadows | P1 | `MaskFilterCreateBlurNew` + blurred rounded rect |
+| Image colorize | P1 | `image.colorize()` never read |
+| Paths | P2 | PathBuilder API, map Slint path events |
+| Text input | P3 | Reuse draw_text + cursor/selection rects |
 
 ## Impeller C API Header
 
