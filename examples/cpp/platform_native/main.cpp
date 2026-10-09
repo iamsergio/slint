@@ -10,7 +10,7 @@
 
 static std::unique_ptr<AppView> app;
 
-extern "C" static LRESULT WindowProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+static LRESULT WindowProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     /* Add a win32 push button and do something when it's clicked.  */
