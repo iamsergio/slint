@@ -1,0 +1,64 @@
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+# Build and test the C++ API on Windows with clang-cl instead of MSVC's cl.exe
+name: clang-cl
+
+on:
+    workflow_dispatch:
+    push:
+        branches: [master]
+        paths:
+            - "api/cpp/**"
+            - "internal/**"
+            - "tests/**"
+            - "CMakeLists.txt"
+            - ".github/workflows/clang_cl.yaml"
+    pull_request:
+        paths:
+            - "api/cpp/**"
+            - "CMakeLists.txt"
+            - ".github/workflows/clang_cl.yaml"
+
+jobs:
+    cpp_clang_cl:
+        runs-on: windows-2022
+        env:
+            SLINT_EMIT_DEBUG_INFO: 1
+            QT_QPA_PLATFORM: offscreen
+        steps:
+            - uses: actions/checkout@v7
+            - name: Install Qt
+              uses: jurplel/install-qt-action@v4
+              with:
+                  version: 6.5.1
+                  cache: true
+            - uses: ./.github/actions/setup-rust
+              with:
+                  toolchain: nightly
+                  # Corrosion runs cargo with a target directory inside the
+                  # CMake build tree, which the default cache misses
+                  cache-directories: ${{ runner.workspace }}/cppbuild/cargo
+            # Puts the MSVC environment, the Windows SDK, clang-cl and Ninja on PATH
+            - uses: ilammy/msvc-dev-cmd@v1
+            # fmt (fetched by the iot-dashboard example) only builds its C++ modules target with the
+            # plain "Ninja" generator, and clang-cl can't scan modules. "Ninja Multi-Config" avoids it.
+            - name: Configure
+              shell: pwsh
+              run: >
+                  cmake -S . -B ${{ runner.workspace }}/cppbuild -G "Ninja Multi-Config"
+                  -DCMAKE_C_COMPILER=clang-cl
+                  -DCMAKE_CXX_COMPILER=clang-cl
+                  -DSLINT_BUILD_TESTING=ON
+                  -DSLINT_BUILD_EXAMPLES=ON
+                  -DSLINT_FEATURE_BACKEND_QT=ON
+                  -DSLINT_FEATURE_RENDERER_SKIA=ON
+                  -DSLINT_FEATURE_EXPERIMENTAL=ON
+                  -DSLINT_FEATURE_TESTING=ON
+                  -DSLINT_FEATURE_IMAGE_PIXEL_FORMAT_RGB565=ON
+                  -DSLINT_FEATURE_IMAGE_PIXEL_FORMAT_GRAY8=ON
+            - name: Build
+              run: cmake --build ${{ runner.workspace }}/cppbuild --config Release
+            - name: ctest
+              working-directory: ${{ runner.workspace }}/cppbuild
+              run: ctest --verbose -C Release
