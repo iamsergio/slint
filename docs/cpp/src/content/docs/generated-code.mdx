@@ -150,3 +150,8 @@ previous section, you can access `Logic` like this:
 Global singletons are instantiated once per component. When declaring multiple components for `export` to C++,
 each instance will have their own instance of associated globals singletons.
 :::
+
+## Native Components
+
+The experimental <SlintRef href="guide/experimental/native-component/" label="native component" code={false} /> declaration generates an abstract C++ class that you implement.
+Define the static `create()` function of the class to return your implementation.
