@@ -35,6 +35,7 @@ mod lower_accessibility;
 mod lower_component_container;
 pub(crate) mod lower_layout;
 mod lower_menus;
+mod lower_native_components;
 mod lower_platform;
 mod lower_popups;
 mod lower_property_to_element;
@@ -155,6 +156,12 @@ pub async fn run_passes(
         lower_popups::lower_popups(component, &doc.local_registry, diag);
         collect_init_code::collect_init_code(component);
         lower_timers::lower_timers(component, diag);
+        lower_native_components::lower_native_components(
+            component,
+            &doc.local_registry,
+            type_loader.compiler_config.native_components_supported,
+            diag,
+        );
         lower_menus::remove_root_menus(component);
     });
 

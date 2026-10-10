@@ -434,6 +434,7 @@ mod plural_rule_parser {
                     public_components: Default::default(),
                     sub_components: Default::default(),
                     used_sub_components: Default::default(),
+                    native_component_classes: Default::default(),
                     globals: Default::default(),
                     has_debug_info: false,
                     translations: None,

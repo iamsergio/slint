@@ -1,0 +1,53 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+native component Finder {
+    in property <int> limit;
+    out property <int> found;
+    callback finished(count: int);
+    function start();
+}
+
+component Wrapper {
+    in property <[int]> model;
+    in property <bool> cond;
+
+    Rectangle {
+        for x in model: Rectangle {
+            Finder { }
+        }
+        if cond: Rectangle {
+            Finder { }
+        }
+    }
+}
+
+component Children {
+    Finder {
+//  >     <error{A native component can't have children}
+        Rectangle { }
+    }
+}
+
+component Direct1 {
+    in property <[int]> model;
+    for x in model: Finder { }
+//                  >     <error{'Finder' can't be repeated, conditional, or inherited from; place it inside another element}
+}
+
+component Direct2 {
+    in property <bool> cond;
+    if cond: Finder { }
+//           >     <error{'Finder' can't be repeated, conditional, or inherited from; place it inside another element}
+}
+
+component Inherits inherits Finder { }
+//                          >     <error{'Finder' can't be repeated, conditional, or inherited from; place it inside another element}
+
+export component Root inherits Window {
+    Direct1 { }
+    Direct2 { }
+    Inherits { }
+    Wrapper { }
+    Children { }
+}

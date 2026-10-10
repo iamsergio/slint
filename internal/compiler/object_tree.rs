@@ -337,7 +337,7 @@ impl Document {
         self.exports
             .iter()
             .filter_map(|e| e.1.as_ref().left())
-            .filter(|c| !c.is_global() && !c.is_interface())
+            .filter(|c| !c.is_global() && !c.is_interface() && !c.is_native())
             .filter(move |c| seen.insert(Rc::as_ptr(c)))
             .cloned()
     }
@@ -382,6 +382,14 @@ pub struct PopupWindow {
     /// with the popup's visibility (`true` while shown, `false` once closed). This is `Some` only when
     /// the parent reads the PopupWindow's `is-open` property; see the `lower_popups` pass.
     pub is_open: Option<NamedReference>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeComponentInstance {
+    pub declaration: Rc<Component>,
+    pub element: ElementWeak,
+    /// In the declaration's order.
+    pub members: Vec<(SmolStr, NamedReference)>,
 }
 
 #[derive(Debug, Clone)]
@@ -565,6 +573,7 @@ pub struct Component {
 
     pub popup_windows: RefCell<Vec<PopupWindow>>,
     pub timers: RefCell<Vec<Timer>>,
+    pub native_components: RefCell<Vec<NativeComponentInstance>>,
     pub menu_item_tree: RefCell<Vec<Rc<Component>>>,
 
     /// This component actually inherits PopupWindow (although that has been changed to a Window by the lower_popups pass)
@@ -583,6 +592,9 @@ pub struct Component {
 
     /// True if this component is imported from an external library.
     pub from_library: Cell<bool>,
+
+    /// Declared with `native component`: implemented by the application, not in `.slint`.
+    pub is_native: bool,
 }
 
 impl Component {
@@ -594,7 +606,9 @@ impl Component {
         let mut child_insertion_points = BTreeMap::new();
         let mut declared_slots = Vec::new();
         let is_legacy_syntax = node.child_token(SyntaxKind::ColonEqual).is_some();
+        let is_native = node.child_text(SyntaxKind::Identifier).is_some_and(|t| t == "native");
         let c = Component {
+            is_native,
             node: Some(node.clone()),
             id: parser::identifier_text(&node.DeclaredIdentifier()).unwrap_or_default(),
             root_element: Element::from_node(
@@ -608,6 +622,13 @@ impl Component {
                     }
                     Some(t) if t == "interface" => {
                         if reject_experimental_feature(diag, tr, "interface", &node) {
+                            ElementType::Error
+                        } else {
+                            ElementType::Interface(None)
+                        }
+                    }
+                    Some(t) if t == "native" => {
+                        if reject_experimental_feature(diag, tr, "native component", &node) {
                             ElementType::Error
                         } else {
                             ElementType::Interface(None)
@@ -676,7 +697,7 @@ impl Component {
         if !diagnostics.enable_experimental {
             return;
         }
-        if self.is_global() || self.is_interface() {
+        if self.is_global() || self.is_interface() || self.is_native {
             return;
         }
         let mut declared_slot_nodes = BTreeMap::<SmolStr, syntax_nodes::DeclaredIdentifier>::new();
@@ -732,7 +753,13 @@ impl Component {
 
     /// This is an interface introduced with the "interface" keyword
     pub fn is_interface(&self) -> bool {
-        matches!(&self.root_element.borrow().base_type, ElementType::Interface(_))
+        !self.is_native
+            && matches!(&self.root_element.borrow().base_type, ElementType::Interface(_))
+    }
+
+    /// This is a component declared with the "native component" keywords
+    pub fn is_native(&self) -> bool {
+        self.is_native
     }
 
     /// True if this component's root resolves to the `SystemTrayIcon` builtin.
@@ -892,13 +919,20 @@ fn from_base(mut r: PropertyLookupResult<'_>) -> PropertyLookupResult<'_> {
     r
 }
 
+fn is_native_declaration(node: &syntax_nodes::Element) -> bool {
+    node.parent().is_some_and(|p| {
+        p.kind() == SyntaxKind::Component
+            && p.child_text(SyntaxKind::Identifier).is_some_and(|t| t == "native")
+    })
+}
+
 fn implement_is_allowed(node: &syntax_nodes::Element) -> bool {
     let mut candidate = node.parent();
     while let Some(declaration) = candidate {
         if declaration.kind() == SyntaxKind::Component {
             return !matches!(
                 declaration.child_text(SyntaxKind::Identifier).as_deref(),
-                Some("global" | "interface")
+                Some("global" | "interface" | "native")
             );
         }
         candidate = declaration.parent();
@@ -906,14 +940,19 @@ fn implement_is_allowed(node: &syntax_nodes::Element) -> bool {
     true
 }
 
+const NATIVE_BINDING_MESSAGE: &str =
+    "A native component cannot have bindings; set the value where you use it";
+
 fn disallow_non_member_content(
     node: &syntax_nodes::Element,
     declaration: &ElementType,
     diag: &mut BuildDiagnostics,
 ) {
+    let is_native = is_native_declaration(node);
     let mut error_on = |node: &dyn Spanned, what: &str| {
         let element_type = match declaration {
             ElementType::Global => "A global component",
+            ElementType::Interface(_) if is_native => "A native component",
             ElementType::Interface(_) => "An interface",
             _ => "An unexpected type",
         };
@@ -941,7 +980,13 @@ fn disallow_non_member_content(
     node.MatchElement().for_each(|n| error_on(&n, "match elements"));
     node.SlotDeclaration().for_each(|n| error_on(&n, "slots"));
 
-    if matches!(declaration, ElementType::Interface(_)) {
+    if is_native {
+        node.Binding().for_each(|n| diag.push_error(NATIVE_BINDING_MESSAGE.into(), &n));
+        node.TwoWayBinding().for_each(|n| diag.push_error(NATIVE_BINDING_MESSAGE.into(), &n));
+        node.ImplementStatement().for_each(|stmt| {
+            diag.push_error("A native component cannot implement an interface".into(), &stmt);
+        });
+    } else if matches!(declaration, ElementType::Interface(_)) {
         node.Binding().for_each(|n| error_on(&n, "bindings"));
         node.TwoWayBinding().for_each(|n| error_on(&n, "two-way bindings"));
 
@@ -2167,6 +2212,7 @@ impl Element {
             tr.empty_type()
         };
         let is_interface = matches!(base_type, ElementType::Interface(_));
+        let is_native = is_component_root && is_native_declaration(node);
         // This isn't truly qualified yet, the enclosing component is added at the end of Component::from_node
         let qualified_id = (!id.is_empty()).then(|| id.clone());
         if let ElementType::Component(c) | ElementType::Interface(Some(c)) = &base_type {
@@ -2274,7 +2320,20 @@ impl Element {
                 }
             });
 
-            if is_interface {
+            if is_native {
+                if let Some(binding_expression) = &prop_decl.BindingExpression() {
+                    diag.push_error(NATIVE_BINDING_MESSAGE.into(), binding_expression)
+                }
+                if let Some(two_way) = &prop_decl.TwoWayBinding() {
+                    diag.push_error(NATIVE_BINDING_MESSAGE.into(), two_way)
+                }
+                if visibility == PropertyVisibility::Private {
+                    diag.push_error(
+                        "'private' properties are inaccessible in a native component".into(),
+                        &prop_decl,
+                    );
+                }
+            } else if is_interface {
                 if let Some(binding_expression) = &prop_decl.BindingExpression() {
                     diag.push_error(
                         "Interface properties cannot have default values".into(),
@@ -2554,7 +2613,16 @@ impl Element {
                 }
             }
 
-            if is_interface && visibility != PropertyVisibility::Public {
+            if is_native {
+                if visibility == PropertyVisibility::Protected {
+                    diag.push_error(
+                        "Function declarations in a native component must be public".into(),
+                        &func,
+                    );
+                }
+                visibility = PropertyVisibility::Public;
+                pure = pure.or(Some(false));
+            } else if is_interface && visibility != PropertyVisibility::Public {
                 diag.push_error(
                     "Function declarations in an interface must be public".into(),
                     &func,
@@ -2575,7 +2643,12 @@ impl Element {
             match (base_type.clone(), func.CodeBlock()) {
                 (ElementType::Interface(_), Some(code_block)) => {
                     diag.push_error(
-                        "Function declarations in interfaces must not have a body".into(),
+                        if is_native {
+                            "Function declarations in a native component must not have a body"
+                        } else {
+                            "Function declarations in interfaces must not have a body"
+                        }
+                        .into(),
                         &code_block,
                     );
                     continue;
@@ -4771,6 +4844,9 @@ fn visit_all_named_references_dyn(component: &Component, vis: &mut dyn FnMut(&mu
                     vis(&mut t.interval);
                     vis(&mut t.triggered);
                     vis(&mut t.running);
+                });
+                compo.native_components.borrow_mut().iter_mut().for_each(|n| {
+                    n.members.iter_mut().for_each(|(_, nr)| vis(nr));
                 });
                 for o in compo.optimized_elements.borrow().iter() {
                     visit_element_expressions(o, |expr, _, _| {

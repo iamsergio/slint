@@ -384,6 +384,22 @@ impl Snapshotter {
             let timers = RefCell::new(
                 component.timers.borrow().iter().map(|p| self.snapshot_timer(p)).collect(),
             );
+            let native_components = RefCell::new(
+                component
+                    .native_components
+                    .borrow()
+                    .iter()
+                    .map(|n| object_tree::NativeComponentInstance {
+                        declaration: n.declaration.clone(),
+                        element: n.element.clone(),
+                        members: n
+                            .members
+                            .iter()
+                            .map(|(name, nr)| (name.clone(), nr.snapshot(self)))
+                            .collect(),
+                    })
+                    .collect(),
+            );
             let root_constraints = RefCell::new(
                 self.snapshot_layout_constraints(&component.root_constraints.borrow()),
             );
@@ -409,6 +425,8 @@ impl Snapshotter {
                 parent_element: RefCell::new(parent_element),
                 popup_windows,
                 timers,
+                native_components,
+                is_native: component.is_native,
                 menu_item_tree,
                 private_properties: RefCell::new(component.private_properties.borrow().clone()),
                 root_constraints,
