@@ -1849,6 +1849,7 @@ fn generate_sub_component(
         quote!(usize::MAX)
     };
 
+    debug_assert!(component.native_components.is_empty());
     let timer_names =
         component.timers.iter().enumerate().map(|(idx, _)| format_ident!("timer{idx}"));
     let update_timers = (!component.timers.is_empty()).then(|| {

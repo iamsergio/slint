@@ -217,6 +217,9 @@ pub struct CompilerConfiguration {
     /// live-reload runtime to indicate that the `.slint` file is being previewed rather than
     /// driven by real host application logic.
     pub is_preview: bool,
+
+    /// False for generators that can't instantiate `native component` declarations.
+    pub native_components_supported: bool,
 }
 
 impl CompilerConfiguration {
@@ -297,6 +300,13 @@ impl CompilerConfiguration {
         #[cfg(feature = "slint-sc")]
         let slint_sc = matches!(output_format, OutputFormat::SlintSc);
 
+        let native_components_supported = match output_format {
+            #[cfg(feature = "cpp")]
+            OutputFormat::Cpp(_) => true,
+            OutputFormat::Interpreter => true,
+            _ => false,
+        };
+
         let cpp_namespace = match output_format {
             #[cfg(feature = "cpp")]
             OutputFormat::Cpp(config) => match config.namespace {
@@ -340,6 +350,7 @@ impl CompilerConfiguration {
             #[cfg(feature = "slint-sc")]
             slint_sc,
             is_preview: false,
+            native_components_supported,
         }
     }
 }

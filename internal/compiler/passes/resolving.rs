@@ -2835,7 +2835,11 @@ fn continue_lookup_within_element(
             let what = match &elem.borrow().base_type {
                 ElementType::Global | ElementType::Interface(_) => {
                     let enclosing_type = elem.borrow().enclosing_component.upgrade().unwrap();
-                    assert!(enclosing_type.is_global() || enclosing_type.is_interface());
+                    assert!(
+                        enclosing_type.is_global()
+                            || enclosing_type.is_interface()
+                            || enclosing_type.is_native()
+                    );
                     format!("'{}'", enclosing_type.id)
                 }
                 ElementType::Component(c) => format!("Element '{}'", c.id),

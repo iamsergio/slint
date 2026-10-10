@@ -105,12 +105,15 @@ pub fn parse_document(p: &mut impl Parser) -> bool {
 /// component C inherits D { }
 /// interface I { property<int> xx; }
 /// interface I inherits J { property<int> xx; }
+/// native component N { in property <int> x; function f(); }
 /// ```
 pub fn parse_component(p: &mut impl Parser) -> bool {
     let simple_component = p.nth(1).kind() == SyntaxKind::ColonEqual;
     let is_global = !simple_component && p.peek().as_str() == "global";
     let is_interface = !simple_component && p.peek().as_str() == "interface";
-    let is_new_component = !simple_component && p.peek().as_str() == "component";
+    let is_native =
+        !simple_component && p.peek().as_str() == "native" && p.nth(1).as_str() == "component";
+    let is_new_component = is_native || (!simple_component && p.peek().as_str() == "component");
     if !is_global && !simple_component && !is_new_component && !is_interface {
         p.error(
             "Parse error: expected a top-level item such as a component, a struct, or a global",
@@ -119,14 +122,27 @@ pub fn parse_component(p: &mut impl Parser) -> bool {
     }
     let mut p = p.start_node(SyntaxKind::Component);
     if is_global || is_new_component || is_interface {
-        p.consume();
+        if is_native {
+            p.expect(SyntaxKind::Identifier);
+        }
+        p.expect(SyntaxKind::Identifier);
     }
     if !p.start_node(SyntaxKind::DeclaredIdentifier).expect(SyntaxKind::Identifier) {
         drop(p.start_node(SyntaxKind::Element));
         return false;
     }
     let mut interface_inherits = false;
-    if is_global {
+    if is_native {
+        if p.peek().kind() != SyntaxKind::LBrace {
+            p.error("Expected '{' after the name of a native component");
+            drop(p.start_node(SyntaxKind::Element));
+            return false;
+        }
+        let mut p = p.start_node(SyntaxKind::Element);
+        p.consume();
+        parse_element_content(&mut *p);
+        return p.expect(SyntaxKind::RBrace);
+    } else if is_global {
         if p.peek().kind() == SyntaxKind::ColonEqual {
             p.warning("':=' to declare a global is deprecated. Remove the ':='");
             p.consume();

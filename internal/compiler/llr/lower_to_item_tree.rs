@@ -195,6 +195,7 @@ pub fn lower_to_item_tree(
         public_components,
         globals,
         sub_components: state.sub_components.into_iter().map(|sc| sc.sub_component).collect(),
+        native_component_classes: state.native_component_classes,
         used_sub_components: document
             .used_types
             .borrow()
@@ -316,6 +317,7 @@ pub struct LoweringState {
     sub_component_mapping: HashMap<ByAddress<Rc<Component>>, SubComponentIdx>,
     /// The native class selected for each element lowered to an item.
     native_classes: HashMap<ByAddress<ElementRc>, Arc<NativeClass>>,
+    native_component_classes: Vec<NativeComponentClass>,
     #[cfg(feature = "bundle-translations")]
     pub translation_builder: Option<crate::translations::TranslationsBuilder>,
     /// Counter for the unique `struct_assignment{n}` local variable names. Local
@@ -434,6 +436,7 @@ fn lower_sub_component(
         popup_windows: Default::default(),
         menu_item_trees: Vec::new(),
         timers: Default::default(),
+        native_components: Default::default(),
         sub_components: Default::default(),
         property_init: Default::default(),
         change_callbacks: Default::default(),
@@ -812,6 +815,11 @@ fn lower_sub_component(
         .collect();
 
     sub_component.timers = component.timers.borrow().iter().map(|t| lower_timer(t, &ctx)).collect();
+
+    for n in component.native_components.borrow().iter() {
+        let lowered = lower_native_component(n, &mut ctx);
+        sub_component.native_components.push(lowered);
+    }
 
     for_each_const_properties(ctx.state, component, |elem, n| {
         let x = ctx.map_property_reference(&NamedReference::new(elem, n.clone()));
@@ -1288,6 +1296,48 @@ fn lower_popup_component(
         root: ctx.state.push_sub_component(sc),
     };
     PopupWindow { item_tree, position: position.into(), is_tooltip: popup.is_tooltip }
+}
+
+fn lower_native_component(
+    instance: &object_tree::NativeComponentInstance,
+    ctx: &mut ExpressionLoweringCtx,
+) -> NativeComponentInstance {
+    let declaration = instance.declaration.root_element.borrow();
+    let class_name = instance.declaration.id.clone();
+    if !ctx.state.native_component_classes.iter().any(|c| c.name == class_name) {
+        let members = declaration
+            .property_declarations
+            .iter()
+            .map(|(name, decl)| NativeMember {
+                name: name.clone(),
+                ty: decl.property_type.clone(),
+                visibility: decl.visibility,
+            })
+            .collect();
+        ctx.state
+            .native_component_classes
+            .push(NativeComponentClass { name: class_name.clone(), members });
+    }
+
+    let mut lowered = NativeComponentInstance {
+        class_name,
+        properties: Vec::new(),
+        callbacks: Vec::new(),
+        functions: Vec::new(),
+    };
+    for (name, nr) in &instance.members {
+        let reference = ctx.map_property_reference(nr);
+        match &declaration.property_declarations[name].property_type {
+            Type::Function(_) => lowered.functions.push((name.clone(), reference)),
+            Type::Callback(_) => lowered.callbacks.push((name.clone(), reference)),
+            _ => lowered.properties.push(NativeProperty {
+                name: name.clone(),
+                reference,
+                visibility: declaration.property_declarations[name].visibility,
+            }),
+        }
+    }
+    lowered
 }
 
 fn lower_timer(timer: &object_tree::Timer, ctx: &ExpressionLoweringCtx) -> Timer {

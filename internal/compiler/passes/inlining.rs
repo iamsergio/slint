@@ -449,6 +449,13 @@ fn inline_element(
         Timer { element: Rc::downgrade(inlined_element), ..t.clone() }
     }));
 
+    root_component.native_components.borrow_mut().extend(
+        inlined_component.native_components.borrow().iter().map(|n| {
+            let inlined_element = mapping.get(&element_key(n.element.upgrade().unwrap())).unwrap();
+            NativeComponentInstance { element: Rc::downgrade(inlined_element), ..n.clone() }
+        }),
+    );
+
     let mut moved_into_popup = HashSet::new();
     if let Some(children) = move_children_into_popup {
         let inlined_insertion_points = inlined_component.child_insertion_points.borrow();
@@ -598,6 +605,11 @@ fn inline_element(
         fixup_reference(&mut t.running, &mapping);
         fixup_reference(&mut t.triggered, &mapping);
     }
+    for n in root_component.native_components.borrow_mut().iter_mut() {
+        for (_, nr) in n.members.iter_mut() {
+            fixup_reference(nr, &mapping);
+        }
+    }
     // If some element were moved into PopupWindow, we need to report error if they are used outside of the popup window.
     if !moved_into_popup.is_empty() {
         recurse_elem_no_borrow(&root_component.root_element.clone(), &(), &mut |e, _| {
@@ -729,6 +741,8 @@ fn duplicate_sub_component(
         init_code: component_to_duplicate.init_code.clone(),
         popup_windows: Default::default(),
         timers: component_to_duplicate.timers.clone(),
+        native_components: component_to_duplicate.native_components.clone(),
+        is_native: component_to_duplicate.is_native,
         menu_item_tree: Default::default(),
         exported_global_names: component_to_duplicate.exported_global_names.clone(),
         used: component_to_duplicate.used.clone(),
@@ -764,6 +778,14 @@ fn duplicate_sub_component(
         fixup_reference(&mut t.triggered, mapping);
         if let Some(e) = mapping.get(&element_key(t.element.upgrade().unwrap())) {
             t.element = Rc::downgrade(e);
+        }
+    }
+    for n in new_component.native_components.borrow_mut().iter_mut() {
+        for (_, nr) in n.members.iter_mut() {
+            fixup_reference(nr, mapping);
+        }
+        if let Some(e) = mapping.get(&element_key(n.element.upgrade().unwrap())) {
+            n.element = Rc::downgrade(e);
         }
     }
     *new_component.menu_item_tree.borrow_mut() = component_to_duplicate
