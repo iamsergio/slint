@@ -1,0 +1,27 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: cpp,rust,js,pyi,d.ts
+
+native component Finder {
+    in property <int> limit;
+    out property <int> found;
+    callback finished(count: int);
+    pure function add(a: int, b: int) -> int;
+    function start();
+}
+
+export component TestCase {
+    in property <int> limit: 7;
+    out property <bool> test: finder.limit == 7 && finder.found == 0 && finder.add(1, 2) == 0;
+
+    Rectangle {
+        finder := Finder {
+            limit: root.limit;
+            finished(n) => { }
+        }
+        TouchArea {
+            clicked => { finder.start(); }
+        }
+    }
+}

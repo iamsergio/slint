@@ -1,0 +1,89 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Fetcher {
+    in property <string> tag;
+    in-out property <string> url;
+}
+
+component Inner {
+    in-out property <string> address;
+
+    Rectangle {
+        Fetcher {
+            tag: "nested";
+            url <=> root.address;
+        }
+    }
+}
+
+export component TestCase {
+    in-out property <string> url;
+    in-out property <string> nested;
+
+    Rectangle {
+        Fetcher {
+            tag: "plain";
+            url <=> root.url;
+        }
+        Inner {
+            address <=> root.nested;
+        }
+    }
+}
+
+/*
+```cpp.toplevel
+class FetcherImpl : public Fetcher
+{
+public:
+    static inline std::vector<FetcherImpl *> all;
+    FetcherImpl() { all.push_back(this); }
+    ~FetcherImpl() override { all.erase(std::find(all.begin(), all.end(), this)); }
+
+    static FetcherImpl *find(std::string_view tag)
+    {
+        for (auto *f : all) {
+            if (std::string_view(f->get_tag()) == tag)
+                return f;
+        }
+        return nullptr;
+    }
+    slint::SharedString current() const { return get_url(); }
+    void change(const slint::SharedString &url) const { set_url(url); }
+};
+
+std::unique_ptr<Fetcher> Fetcher::create()
+{
+    return std::make_unique<FetcherImpl>();
+}
+```
+
+```cpp
+{
+    auto handle = TestCase::create();
+    const TestCase &instance = *handle;
+    auto *plain = FetcherImpl::find("plain");
+    auto *nested = FetcherImpl::find("nested");
+    assert(plain && nested && plain != nested);
+
+    instance.set_url("a");
+    assert_eq(plain->current(), "a");
+    assert_eq(nested->current(), "");
+
+    plain->change("b");
+    assert_eq(instance.get_url(), "b");
+
+    instance.set_nested("c");
+    assert_eq(nested->current(), "c");
+    assert_eq(plain->current(), "b");
+
+    nested->change("d");
+    assert_eq(instance.get_nested(), "d");
+    assert_eq(instance.get_url(), "b");
+}
+assert_eq(FetcherImpl::all.size(), 0u);
+```
+*/
