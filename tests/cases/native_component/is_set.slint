@@ -1,0 +1,173 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Settings {
+    in property <int> unset;
+    in property <int> constant;
+    in property <int> bound;
+    in property <int> from-state;
+    in-out property <int> linked;
+    in-out property <int> linked-back;
+    in-out property <int> linked-global;
+    in-out property <int> in-out-unset;
+    out property <int> result;
+    callback done();
+    function run();
+}
+
+global Shared {
+    in-out property <int> value;
+}
+
+component Row {
+    in property <int> value;
+    in-out property <int> total;
+
+    Rectangle {
+        Settings {
+            constant: 3;
+            bound: root.value;
+            linked <=> root.total;
+        }
+    }
+}
+
+export component TestCase inherits Window {
+    width: 100px;
+    height: 100px;
+    in property <int> value;
+    in property <bool> active;
+    in property <[int]> values;
+    in-out property <int> total;
+    in-out property <int> back;
+
+    // A property of the root linked to the native one, the other way around
+    back <=> settings.linked-back;
+
+    Rectangle {
+        settings := Settings {
+            constant: 5;
+            bound: root.value + 1;
+            linked <=> root.total;
+            linked-global <=> Shared.value;
+            states [
+                on when root.active: {
+                    from-state: 1;
+                }
+            ]
+        }
+    }
+    // A sub-component, used twice
+    Row {
+        value: 1;
+    }
+    Row {
+        value: 2;
+    }
+    // Repeated, with an instance that sets nothing but the property of the model
+    for v in values: Rectangle {
+        Settings {
+            bound: v;
+        }
+    }
+}
+
+/*
+```cpp.toplevel
+#include <map>
+#include <string>
+
+class SettingsImpl : public Settings
+{
+public:
+    static inline std::vector<SettingsImpl *> all;
+    // The default of the impl, kept when the .slint doesn't set the property
+    int default_unset = 42;
+    std::map<std::string, bool> set_at_init;
+
+    SettingsImpl() { all.push_back(this); }
+    ~SettingsImpl() override { all.erase(std::find(all.begin(), all.end(), this)); }
+
+    void init() override
+    {
+        set_at_init["unset"] = is_unset_set();
+        set_at_init["constant"] = is_constant_set();
+        set_at_init["bound"] = is_bound_set();
+        set_at_init["from_state"] = is_from_state_set();
+        set_at_init["linked"] = is_linked_set();
+        set_at_init["linked_back"] = is_linked_back_set();
+        set_at_init["linked_global"] = is_linked_global_set();
+        set_at_init["in_out_unset"] = is_in_out_unset_set();
+        set_at_init["result"] = is_result_set();
+        // What an impl would do: keep its own default for what the .slint didn't set
+        if (!is_unset_set()) {
+            set_result(default_unset);
+        } else {
+            set_result(get_unset());
+        }
+    }
+    void run() override { }
+    int result() const { return get_result(); }
+};
+
+std::unique_ptr<Settings> Settings::create()
+{
+    return std::make_unique<SettingsImpl>();
+}
+```
+
+```cpp
+auto handle = TestCase::create();
+const TestCase &instance = *handle;
+
+// Created in this order: the 2 rows, then the one of the root
+assert_eq(SettingsImpl::all.size(), 3u);
+{
+    auto &s = SettingsImpl::all[2]->set_at_init;
+    assert(!s["unset"]);
+    assert(s["constant"]);
+    assert(s["bound"]);
+    assert(s["from_state"]);
+    assert(s["linked"]);
+    assert(s["linked_back"]);
+    assert(s["linked_global"]);
+    assert(!s["in_out_unset"]);
+    assert(!s["result"]);
+}
+// The same sub-component, each instance has the same answers
+for (int i = 0; i < 2; ++i) {
+    auto &s = SettingsImpl::all[i]->set_at_init;
+    assert(!s["unset"]);
+    assert(s["constant"]);
+    assert(s["bound"]);
+    assert(!s["from_state"]);
+    assert(s["linked"]);
+    assert(!s["linked_back"]);
+    assert(!s["linked_global"]);
+    assert(!s["in_out_unset"]);
+    assert(!s["result"]);
+}
+// The impl kept its default
+assert_eq(SettingsImpl::all[2]->result(), 42);
+assert_eq(SettingsImpl::all[0]->result(), 42);
+
+// In the repeater
+auto model = std::make_shared<slint::VectorModel<int>>(std::vector<int> { 100, 200 });
+instance.set_values(model);
+slint_testing::send_mouse_click(&instance, 5., 5.);
+assert_eq(SettingsImpl::all.size(), 5u);
+for (int i = 3; i < 5; ++i) {
+    auto &s = SettingsImpl::all[i]->set_at_init;
+    assert(!s["unset"]);
+    assert(!s["constant"]);
+    assert(s["bound"]);
+    assert(!s["from_state"]);
+    assert(!s["linked"]);
+    assert(!s["linked_back"]);
+    assert(!s["linked_global"]);
+    assert(!s["in_out_unset"]);
+}
+```
+*/

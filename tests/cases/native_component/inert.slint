@@ -5,6 +5,7 @@
 
 native component Finder {
     in property <int> limit;
+    in-out property <int> level;
     out property <int> found;
     callback finished(count: int);
     pure function add(a: int, b: int) -> int;
@@ -13,11 +14,15 @@ native component Finder {
 
 export component TestCase {
     in property <int> limit: 7;
-    out property <bool> test: finder.limit == 7 && finder.found == 0 && finder.add(1, 2) == 0;
+    in-out property <int> level;
+    in-out property <int> level-changes;
+    out property <bool> test: finder.limit == 7 && finder.found == 0 && finder.add(1, 2) == 0 && finder.level == level;
 
     Rectangle {
         finder := Finder {
             limit: root.limit;
+            level <=> root.level;
+            changed limit => { root.level-changes += 1; }
             finished(n) => { }
         }
         TouchArea {
