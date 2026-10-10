@@ -405,7 +405,9 @@ mod visitor {
             for p in &mut n.properties {
                 visit_member_reference(&mut p.reference, &scope, state, visitor);
             }
-            for (_, r) in n.callbacks.iter_mut().chain(n.functions.iter_mut()) {
+            for (_, r) in
+                n.callbacks.iter_mut().chain(n.changed.iter_mut()).chain(n.functions.iter_mut())
+            {
                 visit_member_reference(r, &scope, state, visitor);
             }
         }

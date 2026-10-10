@@ -1096,6 +1096,9 @@ fn generate_native_component_classes(classes: &[llr::NativeComponentClass], file
         let mut private = Vec::new();
         let mut bind_params = Vec::new();
         let mut bind_assignments = Vec::new();
+        let mut hooks = Vec::new();
+        let mut binder_forwarders = Vec::new();
+        hooks.push("virtual void init() {}".to_string());
         for member in &class.members {
             let field = format!("m_{}", concatenate_ident(&member.name));
             match &member.ty {
@@ -1126,6 +1129,8 @@ fn generate_native_component_classes(classes: &[llr::NativeComponentClass], file
                     let cpp_ty = ty.cpp_type().unwrap();
                     let is_input =
                         member.visibility == crate::object_tree::PropertyVisibility::Input;
+                    let is_input_or_inout =
+                        member.visibility != crate::object_tree::PropertyVisibility::Output;
                     let property = format!("slint::private_api::Property<{cpp_ty}>");
                     let pointer = if is_input {
                         format!("const {property} *")
@@ -1145,6 +1150,23 @@ fn generate_native_component_classes(classes: &[llr::NativeComponentClass], file
                     private.push(format!("{pointer}{field} = nullptr;"));
                     bind_params.push(format!("{pointer}{field}"));
                     bind_assignments.push(format!("native.{field} = {field};"));
+
+                    let flag = format!("is_set_{}", concatenate_ident(&member.name));
+                    protected.push(format!(
+                        "bool is_{}_set() const {{ return {flag}; }}",
+                        concatenate_ident(&member.name)
+                    ));
+                    private.push(format!("bool {flag} = false;"));
+                    bind_params.push(format!("bool {flag}"));
+                    bind_assignments.push(format!("native.{flag} = {flag};"));
+
+                    if is_input_or_inout {
+                        let changed = format!("{}_changed", concatenate_ident(&member.name));
+                        hooks.push(format!("virtual void {changed}() {{}}"));
+                        binder_forwarders.push(format!(
+                            "static void {changed}({name} &native) {{ native.{changed}(); }}"
+                        ));
+                    }
                 }
             }
         }
@@ -1158,7 +1180,7 @@ fn generate_native_component_classes(classes: &[llr::NativeComponentClass], file
             text.push_str(&format!("    {line}\n"));
         }
         text.push_str("protected:\n");
-        for line in &protected {
+        for line in hooks.iter().chain(&protected) {
             text.push_str(&format!("    {line}\n"));
         }
         text.push_str("private:\n");
@@ -1175,7 +1197,12 @@ fn generate_native_component_classes(classes: &[llr::NativeComponentClass], file
         for line in &bind_assignments {
             text.push_str(&format!("        {line}\n"));
         }
-        text.push_str("    }\n};\n");
+        text.push_str("    }\n");
+        text.push_str(&format!("    static void init({name} &native) {{ native.init(); }}\n"));
+        for line in &binder_forwarders {
+            text.push_str(&format!("    {line}\n"));
+        }
+        text.push_str("};\n");
         file.declarations.push(Declaration::Raw(text));
     }
 }
@@ -2762,6 +2789,14 @@ fn generate_sub_component(
 
     init.extend(properties_init_code);
 
+    // After the bindings of the whole component are set, and before its `init` callback.
+    for (i, instance) in component.native_components.iter().enumerate() {
+        user_init.push(format!(
+            "slint_internal_{}_binder::init(*self->native{i});",
+            ident(&instance.class_name)
+        ));
+    }
+
     user_init.extend(component.init_code.iter().map(|e| {
         let mut expr_str = compile_expression(&e.borrow(), &ctx);
         expr_str.push(';');
@@ -3109,7 +3144,7 @@ fn native_component_init(
                 .properties
                 .iter()
                 .find(|p| p.name == member.name)
-                .map(|p| address(&p.reference)),
+                .map(|p| format!("{}, {}", address(&p.reference), p.is_set)),
         })
         .join(", ");
     let mut code = vec![
@@ -3124,6 +3159,14 @@ fn native_component_init(
             format!(
                 "{x}.set_handler([native = {field}.get()](auto &&...args) {{ return native->{}(args...); }})",
                 ident(name)
+            ) + ";"
+        }));
+    }
+    for (name, reference) in &instance.changed {
+        code.push(access_member(reference, ctx).then(|x| {
+            format!(
+                "{x}.set_handler([native = {field}.get()](auto &&...) {{ slint_internal_{class_name}_binder::{}_changed(*native); }})",
+                concatenate_ident(name)
             ) + ";"
         }));
     }

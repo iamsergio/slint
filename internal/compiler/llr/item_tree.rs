@@ -648,6 +648,9 @@ pub struct NativeComponentInstance {
     pub class_name: SmolStr,
     pub properties: Vec<NativeProperty>,
     pub callbacks: Vec<(SmolStr, MemberReference)>,
+    /// For each `in` and `in-out` property, the hidden callback its `changed` handler invokes;
+    /// the generated class forwards it to `<name>_changed()`.
+    pub changed: Vec<(SmolStr, MemberReference)>,
     /// Converted from functions; their handler forwards to the native object.
     pub functions: Vec<(SmolStr, MemberReference)>,
 }
@@ -657,6 +660,8 @@ pub struct NativeProperty {
     pub name: SmolStr,
     pub reference: MemberReference,
     pub visibility: PropertyVisibility,
+    /// Whether the instantiation sets the property: with a binding, a constant, or `<=>`.
+    pub is_set: bool,
 }
 
 /// The class a `native component` declaration generates, in the declaration's member order.
