@@ -72,6 +72,12 @@ fn instance_is_lowered_to_members() {
         instance.properties.iter().map(|p| p.name.to_string()).collect::<Vec<_>>(),
         ["found", "limit"]
     );
+    // Only `limit` is set by the instantiation, and only it is an `in` property
+    assert_eq!(
+        instance.properties.iter().map(|p| (p.name.to_string(), p.is_set)).collect::<Vec<_>>(),
+        [("found".to_string(), false), ("limit".to_string(), true)]
+    );
+    assert_eq!(names(&instance.changed), ["limit"]);
     assert_eq!(names(&instance.callbacks), ["finished"]);
     assert_eq!(names(&instance.functions), ["start"]);
 

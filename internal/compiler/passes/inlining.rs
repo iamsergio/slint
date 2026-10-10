@@ -606,7 +606,7 @@ fn inline_element(
         fixup_reference(&mut t.triggered, &mapping);
     }
     for n in root_component.native_components.borrow_mut().iter_mut() {
-        for (_, nr) in n.members.iter_mut() {
+        for nr in n.named_references_mut() {
             fixup_reference(nr, &mapping);
         }
     }
@@ -781,7 +781,7 @@ fn duplicate_sub_component(
         }
     }
     for n in new_component.native_components.borrow_mut().iter_mut() {
-        for (_, nr) in n.members.iter_mut() {
+        for nr in n.named_references_mut() {
             fixup_reference(nr, mapping);
         }
         if let Some(e) = mapping.get(&element_key(n.element.upgrade().unwrap())) {

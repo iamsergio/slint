@@ -390,6 +390,18 @@ pub struct NativeComponentInstance {
     pub element: ElementWeak,
     /// In the declaration's order.
     pub members: Vec<(SmolStr, NamedReference)>,
+    /// For each `in` and `in-out` property, the hidden callback that its `changed` handler calls.
+    pub changed: Vec<(SmolStr, NamedReference)>,
+    /// The properties the instantiation sets: with a binding, a constant, or a two-way binding
+    /// (on either side).
+    pub set_properties: Vec<SmolStr>,
+}
+
+impl NativeComponentInstance {
+    /// All the references of this instance, mutable.
+    pub fn named_references_mut(&mut self) -> impl Iterator<Item = &mut NamedReference> {
+        self.members.iter_mut().chain(self.changed.iter_mut()).map(|(_, nr)| nr)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1246,6 +1258,11 @@ impl Bindings {
         name: &str,
     ) -> Option<&RefCell<BindingExpression>> {
         self.0.get(name)
+    }
+
+    /// All the bindings with their property name, including synthetic debug hooks.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&SmolStr, &RefCell<BindingExpression>)> {
+        self.0.iter()
     }
 }
 
@@ -2622,6 +2639,12 @@ impl Element {
                 }
                 visibility = PropertyVisibility::Public;
                 pure = pure.or(Some(false));
+                if name == "init" {
+                    diag.push_error(
+                        "A native component can't have a function named 'init'; the generated class reserves it for initialization".into(),
+                        &func,
+                    );
+                }
             } else if is_interface && visibility != PropertyVisibility::Public {
                 diag.push_error(
                     "Function declarations in an interface must be public".into(),
@@ -4846,7 +4869,9 @@ fn visit_all_named_references_dyn(component: &Component, vis: &mut dyn FnMut(&mu
                     vis(&mut t.running);
                 });
                 compo.native_components.borrow_mut().iter_mut().for_each(|n| {
-                    n.members.iter_mut().for_each(|(_, nr)| vis(nr));
+                    for nr in n.named_references_mut() {
+                        vis(nr);
+                    }
                 });
                 for o in compo.optimized_elements.borrow().iter() {
                     visit_element_expressions(o, |expr, _, _| {

@@ -1323,6 +1323,11 @@ fn lower_native_component(
         class_name,
         properties: Vec::new(),
         callbacks: Vec::new(),
+        changed: instance
+            .changed
+            .iter()
+            .map(|(name, nr)| (name.clone(), ctx.map_property_reference(nr)))
+            .collect(),
         functions: Vec::new(),
     };
     for (name, nr) in &instance.members {
@@ -1334,6 +1339,7 @@ fn lower_native_component(
                 name: name.clone(),
                 reference,
                 visibility: declaration.property_declarations[name].visibility,
+                is_set: instance.set_properties.contains(name),
             }),
         }
     }

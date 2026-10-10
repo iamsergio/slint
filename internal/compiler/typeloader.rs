@@ -397,6 +397,12 @@ impl Snapshotter {
                             .iter()
                             .map(|(name, nr)| (name.clone(), nr.snapshot(self)))
                             .collect(),
+                        changed: n
+                            .changed
+                            .iter()
+                            .map(|(name, nr)| (name.clone(), nr.snapshot(self)))
+                            .collect(),
+                        set_properties: n.set_properties.clone(),
                     })
                     .collect(),
             );

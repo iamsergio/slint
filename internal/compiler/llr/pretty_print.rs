@@ -230,7 +230,16 @@ impl PrettyPrinter<'_> {
             self.indent()?;
             write!(self.writer, "native {} {{", n.class_name)?;
             for p in &n.properties {
-                write!(self.writer, " {}: {};", p.name, DisplayPropertyRef(&p.reference, &ctx))?;
+                let set = if p.is_set { " (set)" } else { "" };
+                write!(
+                    self.writer,
+                    " {}{set}: {};",
+                    p.name,
+                    DisplayPropertyRef(&p.reference, &ctx)
+                )?;
+            }
+            for (name, r) in &n.changed {
+                write!(self.writer, " changed {name}: {};", DisplayPropertyRef(r, &ctx))?;
             }
             for (name, r) in n.callbacks.iter().chain(&n.functions) {
                 write!(self.writer, " {name}: {};", DisplayPropertyRef(r, &ctx))?;

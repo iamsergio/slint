@@ -5,11 +5,14 @@
 //! callbacks of the enclosing component, and records them in [`Component::native_components`].
 
 use crate::diagnostics::BuildDiagnostics;
-use crate::expression_tree::{Callable, Expression, NamedReference};
-use crate::langtype::{ElementType, Type};
+use crate::expression_tree::{Callable, Expression, NamedReference, TwoWayBinding};
+use crate::langtype::{ElementType, Function, Type};
 use crate::object_tree::*;
 use crate::typeregister::TypeRegister;
+use smol_str::{SmolStr, format_smolstr};
+use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub fn lower_native_components(
     component: &Rc<Component>,
@@ -34,9 +37,17 @@ pub fn lower_native_components(
         return;
     }
 
+    let linked_from_outside = properties_with_two_way_bindings(component);
     let mut lowered = false;
     for (elem, parent_element) in instances {
-        lowered |= lower_instance(&elem, parent_element.as_ref(), type_register, supported, diag);
+        lowered |= lower_instance(
+            &elem,
+            parent_element.as_ref(),
+            &linked_from_outside,
+            type_register,
+            supported,
+            diag,
+        );
     }
     if !lowered {
         return;
@@ -54,9 +65,34 @@ pub fn lower_native_components(
     });
 }
 
+/// The name of the hidden callback that the `changed` handler of the native property `name`
+/// invokes, so that the generated class can forward it to a virtual function.
+fn changed_callback_name(name: &str) -> SmolStr {
+    format_smolstr!("native-changed-{name}")
+}
+
+/// The properties that some other property is linked to with `<=>`, as in `foo <=> finder.limit`.
+fn properties_with_two_way_bindings(component: &Rc<Component>) -> HashSet<(usize, SmolStr)> {
+    let mut linked = HashSet::new();
+    recurse_elem_including_sub_components_no_borrow(component, &(), &mut |elem, _| {
+        for (_, binding) in elem.borrow().bindings.iter() {
+            for two_way in &binding.borrow().two_way_bindings {
+                if let TwoWayBinding::Property { property, .. } = two_way {
+                    linked.insert((
+                        Rc::as_ptr(&property.element()) as usize,
+                        property.name().clone(),
+                    ));
+                }
+            }
+        }
+    });
+    linked
+}
+
 fn lower_instance(
     elem: &ElementRc,
     parent_element: Option<&ElementRc>,
+    linked_from_outside: &HashSet<(usize, SmolStr)>,
     type_register: &TypeRegister,
     supported: bool,
     diag: &mut BuildDiagnostics,
@@ -92,6 +128,8 @@ fn lower_instance(
     }
 
     let mut members = Vec::new();
+    let mut changed = Vec::new();
+    let mut set_properties = Vec::new();
     {
         let declaration_root = declaration.root_element.borrow();
         let mut elem_mut = elem.borrow_mut();
@@ -113,6 +151,44 @@ fn lower_instance(
         if is_function || is_output_property {
             nr.mark_as_set();
         }
+        if !is_function && !matches!(decl.property_type, Type::Callback(_)) {
+            let has_binding = elem.borrow().binding(name).is_some_and(|b| b.has_binding());
+            if has_binding
+                || linked_from_outside.contains(&(Rc::as_ptr(elem) as usize, name.clone()))
+            {
+                set_properties.push(name.clone());
+            }
+            if matches!(decl.visibility, PropertyVisibility::Input | PropertyVisibility::InOut) {
+                // A `changed` handler of the instance, next to the ones the user wrote.
+                let callback_name = changed_callback_name(name);
+                let callback_nr = NamedReference::new(elem, callback_name.clone());
+                elem.borrow_mut().property_declarations.insert(
+                    callback_name.clone(),
+                    PropertyDeclaration {
+                        property_type: Type::Callback(Arc::new(Function {
+                            return_type: Type::Void,
+                            args: Vec::new(),
+                            arg_names: Vec::new(),
+                        })),
+                        pure: Some(false),
+                        synthesized: true,
+                        ..Default::default()
+                    },
+                );
+                let call = Expression::FunctionCall {
+                    function: Callable::Callback(callback_nr.clone()),
+                    arguments: Vec::new(),
+                    source_location: None,
+                };
+                elem.borrow_mut()
+                    .change_callbacks
+                    .entry(name.clone())
+                    .or_default()
+                    .borrow_mut()
+                    .push(call);
+                changed.push((name.clone(), callback_nr));
+            }
+        }
         members.push((name.clone(), nr));
     }
 
@@ -121,6 +197,8 @@ fn lower_instance(
         declaration,
         element: Rc::downgrade(elem),
         members,
+        changed,
+        set_properties,
     });
     true
 }

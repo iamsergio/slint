@@ -24,6 +24,11 @@ export native component WithContent {
 //  >            <error{A native component cannot have an 'init' callback}
 }
 
+export native component ReservedName {
+    function init();
+//  >              <error{A native component can't have a function named 'init'; the generated class reserves it for initialization}
+}
+
 export native component Finder { }
 
 component Implements {

@@ -170,7 +170,7 @@ pub fn count_property_use(root: &CompilationUnit) {
                 .properties
                 .iter()
                 .map(|p| &p.reference)
-                .chain(n.callbacks.iter().chain(&n.functions).map(|(_, r)| r))
+                .chain(n.callbacks.iter().chain(&n.changed).chain(&n.functions).map(|(_, r)| r))
             {
                 visit_property(r, ctx);
             }
