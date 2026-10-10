@@ -1,0 +1,104 @@
+---
+title: Native Component
+description: Experimental non-visual elements implemented in C++.
+---
+
+A `native component` declares a non-visual element that you implement in C++ instead of in Slint.
+Use it to connect a `.slint` file to application logic, such as a background search, a network client, or a device driver, without routing every value through the root component.
+
+> **Note**: `native component` is experimental, subject to change, and supported only when generating C++.
+> The Rust generator, the `slint!` macro, and Slint SC report an error when a `.slint` file instantiates one.
+
+## Declaring a Native Component
+
+Use the `native component` keywords followed by a body that lists the members.
+
+```slint no-test
+export native component PrimeFinder {
+    in property <int> limit;
+    out property <int> found;
+    out property <bool> busy;
+    callback finished(count: int);
+    function start();
+    function stop();
+}
+```
+
+The body may contain:
+
+- Properties with visibility `in`, `out`, or `in-out`.
+  Default values and bindings are not permitted.
+- Callbacks, with any signature except `init`.
+- Function declarations without a body.
+  Functions are public, and you can mark them `pure`.
+
+## Using a Native Component
+
+Instantiate the component like any other element, and bind its properties, handle its callbacks, and call its functions.
+
+```slint no-test
+export component AppWindow inherits Window {
+    for limit in [1000, 50000, 2000000]: Rectangle {
+        finder := PrimeFinder {
+            limit: limit;
+            finished(n) => { debug("done", n); }
+        }
+        TouchArea { clicked => { finder.start(); } }
+        Text { text: finder.busy ? "…" : finder.found; }
+    }
+}
+```
+
+Each instance gets its own C++ object, so every row of the `for` above has independent state.
+
+An instance has no visual representation and takes no part in layout or input.
+It can't have children.
+It also can't be the root of a component, or be repeated or conditional by itself.
+To repeat it, wrap it in another element as in the example.
+
+## Implementing the C++ Class
+
+The C++ generator emits an abstract class named after the declaration, with:
+
+- a pure virtual function for each `function`;
+- protected `get_<name>()` accessors for every property;
+- protected `set_<name>()` setters for `out` and `in-out` properties;
+- protected `invoke_<name>()` functions for every callback.
+
+Derive from the class, implement the functions, and define the static `create()` factory.
+Slint calls `create()` once for each instance, and destroys the object when the instance goes away.
+
+```cpp
+class PrimeFinderImpl : public PrimeFinder
+{
+public:
+    void start() override
+    {
+        set_busy(true);
+        // ...
+        invoke_finished(count);
+        set_busy(false);
+    }
+    void stop() override { set_busy(false); }
+};
+
+std::unique_ptr<PrimeFinder> PrimeFinder::create()
+{
+    return std::make_unique<PrimeFinderImpl>();
+}
+```
+
+The accessors are bound to the instance after `create()` returns.
+Don't call them from the constructor.
+
+Native objects live on the UI thread.
+Call the accessors only from that thread, for example from a `slint::Timer` callback, and don't use them from other threads.
+
+## Preview and Interpreter
+
+The Slint interpreter, and the tools and language bindings built on it, such as the live preview, `slint-viewer`, Node.js, and Python, accept native components, but they have no C++ implementation to run.
+Instances are inert: properties keep the values you bind, functions return default values, and callbacks are never invoked by native code.
+
+## Example
+
+The [native-component example](https://github.com/slint-ui/slint/tree/master/examples/native-component) implements the `PrimeFinder` above with a `slint::Timer`.

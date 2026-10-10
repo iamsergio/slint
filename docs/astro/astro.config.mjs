@@ -303,6 +303,10 @@ export default defineConfig({
                                                   slug: "guide/experimental/interface",
                                               },
                                               {
+                                                  label: "Native Component",
+                                                  slug: "guide/experimental/native-component",
+                                              },
+                                              {
                                                   label: "ComponentContainer",
                                                   slug: "guide/experimental/component-container",
                                               },
