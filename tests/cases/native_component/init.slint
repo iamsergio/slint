@@ -1,0 +1,129 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Probe {
+    in property <int> value;
+    out property <int> at-init;
+    out property <int> init-count;
+    callback hello(n: int);
+}
+
+component Row {
+    in property <int> value;
+    out property <int> at-init: probe.at-init;
+
+    Rectangle {
+        probe := Probe {
+            value: root.value + 1;
+        }
+    }
+}
+
+export component TestCase inherits Window {
+    width: 100px;
+    height: 100px;
+    in property <[int]> values;
+    in-out property <int> hellos;
+    out property <int> top-at-init: top.at-init;
+    out property <int> row-at-init: row.at-init;
+    out property <int> top-count: top.init-count;
+
+    Rectangle {
+        top := Probe {
+            value: 7;
+            hello(n) => {
+                root.hellos += n;
+            }
+        }
+    }
+    row := Row {
+        value: 20;
+    }
+    for v in values: Rectangle {
+        Probe {
+            value: v;
+        }
+    }
+}
+
+/*
+```cpp.toplevel
+class ProbeImpl : public Probe
+{
+public:
+    static inline std::vector<ProbeImpl *> all;
+    static inline int constructed = 0;
+    int init_calls = 0;
+    int value_at_init = -1;
+
+    ProbeImpl()
+    {
+        constructed++;
+        all.push_back(this);
+    }
+    ~ProbeImpl() override { all.erase(std::find(all.begin(), all.end(), this)); }
+
+    void init() override
+    {
+        init_calls++;
+        // The accessors are bound, and the bindings are set, even the ones of the parents.
+        value_at_init = get_value();
+        set_at_init(get_value() * 10);
+        set_init_count(init_calls);
+        // Callbacks can be invoked, the handlers are set.
+        invoke_hello(1);
+    }
+};
+
+std::unique_ptr<Probe> Probe::create()
+{
+    return std::make_unique<ProbeImpl>();
+}
+```
+
+```cpp
+{
+    auto handle = TestCase::create();
+    const TestCase &instance = *handle;
+
+    // The one in the sub-component is created first, then the one of the root.
+    assert_eq(ProbeImpl::all.size(), 2u);
+    assert_eq(ProbeImpl::constructed, 2);
+    for (auto *p : ProbeImpl::all) {
+        assert_eq(p->init_calls, 1);
+    }
+    assert_eq(ProbeImpl::all[1]->value_at_init, 7);
+    assert_eq(instance.get_top_at_init(), 70);
+    assert_eq(instance.get_top_count(), 1);
+    // The sub-component's binding to `root.value` is set by the root's binding, which is
+    // applied before init() is called.
+    assert_eq(ProbeImpl::all[0]->value_at_init, 21);
+    assert_eq(instance.get_row_at_init(), 210);
+    // The handler of the callback was already set in init()
+    assert_eq(instance.get_hellos(), 1);
+
+    auto model = std::make_shared<slint::VectorModel<int>>(std::vector<int> { 100, 200 });
+    instance.set_values(model);
+    slint_testing::send_mouse_click(&instance, 5., 5.);
+    assert_eq(ProbeImpl::all.size(), 4u);
+    assert_eq(ProbeImpl::all[2]->value_at_init, 100);
+    assert_eq(ProbeImpl::all[3]->value_at_init, 200);
+    for (auto *p : ProbeImpl::all) {
+        assert_eq(p->init_calls, 1);
+    }
+
+    // Changing the model's data doesn't call init() again, and neither does adding a row.
+    model->set_row_data(0, 150);
+    model->push_back(300);
+    slint_testing::send_mouse_click(&instance, 5., 5.);
+    assert_eq(ProbeImpl::all.size(), 5u);
+    assert_eq(ProbeImpl::all[4]->value_at_init, 300);
+    for (auto *p : ProbeImpl::all) {
+        assert_eq(p->init_calls, 1);
+    }
+}
+assert_eq(ProbeImpl::all.size(), 0u);
+```
+*/
