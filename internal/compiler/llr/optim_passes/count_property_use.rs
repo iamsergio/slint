@@ -164,6 +164,17 @@ pub fn count_property_use(root: &CompilationUnit) {
             timer.running.borrow().visit_property_references(ctx, &mut visit_property);
             timer.triggered.borrow().visit_property_references(ctx, &mut visit_property);
         }
+        // 12. native components
+        for n in &sc.native_components {
+            for r in n
+                .properties
+                .iter()
+                .map(|p| &p.reference)
+                .chain(n.callbacks.iter().chain(&n.changed).chain(&n.functions).map(|(_, r)| r))
+            {
+                visit_property(r, ctx);
+            }
+        }
     });
 
     for (idx, g) in root.globals.iter_enumerated() {

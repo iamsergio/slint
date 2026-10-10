@@ -239,6 +239,7 @@ mod visitor {
             public_components,
             sub_components,
             used_sub_components: _,
+            native_component_classes: _,
             globals,
             popup_menu,
             has_debug_info: _,
@@ -314,6 +315,7 @@ mod visitor {
             popup_windows,
             menu_item_trees: _,
             timers,
+            native_components,
             sub_components: _,
             property_init,
             change_callbacks,
@@ -398,6 +400,16 @@ mod visitor {
             visit_expression(t.interval.get_mut(), &scope, state, visitor);
             visit_expression(t.triggered.get_mut(), &scope, state, visitor);
             visit_expression(t.running.get_mut(), &scope, state, visitor);
+        }
+        for n in native_components {
+            for p in &mut n.properties {
+                visit_member_reference(&mut p.reference, &scope, state, visitor);
+            }
+            for (_, r) in
+                n.callbacks.iter_mut().chain(n.changed.iter_mut()).chain(n.functions.iter_mut())
+            {
+                visit_member_reference(r, &scope, state, visitor);
+            }
         }
         for (idx, init) in property_init {
             visit_member_reference(idx, &scope, state, visitor);

@@ -253,6 +253,8 @@ pub mod cpp_ast {
         Var(Var),
         TypeAlias(TypeAlias),
         Enum(Enum),
+        /// Pre-formatted text, written as is.
+        Raw(String),
     }
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -828,6 +830,8 @@ pub fn generate(
         generate_translation(translations, &llr, &mut file.resources);
     }
 
+    generate_native_component_classes(&llr.native_component_classes, &mut file);
+
     // Forward-declare the root so that sub-components can access singletons, the window, etc.
     file.declarations.extend(
         llr.public_components
@@ -1063,6 +1067,145 @@ pub fn generate(
     }
 
     Ok(file)
+}
+
+fn native_param_names(function: &crate::langtype::Function) -> Vec<String> {
+    (0..function.args.len())
+        .map(|i| match function.arg_names.get(i) {
+            Some(name) if !name.is_empty() => ident(name).to_string(),
+            _ => format!("arg_{i}"),
+        })
+        .collect()
+}
+
+fn native_param_list(function: &crate::langtype::Function) -> String {
+    function
+        .args
+        .iter()
+        .zip(native_param_names(function))
+        .map(|(ty, name)| format!("{} {name}", ty.cpp_type().unwrap()))
+        .join(", ")
+}
+
+fn generate_native_component_classes(classes: &[llr::NativeComponentClass], file: &mut File) {
+    use accessor_names::{AccessorKind, cpp_accessor_name};
+    for class in classes {
+        let name = ident(&class.name);
+        let binder = format!("slint_internal_{name}_binder");
+        let mut public = Vec::new();
+        let mut protected = Vec::new();
+        let mut private = Vec::new();
+        let mut bind_params = Vec::new();
+        let mut bind_assignments = Vec::new();
+        let mut hooks = Vec::new();
+        let mut binder_forwarders = Vec::new();
+        hooks.push("virtual void init() {}".to_string());
+        for member in &class.members {
+            let field = format!("m_{}", concatenate_ident(&member.name));
+            match &member.ty {
+                Type::Function(function) => {
+                    public.push(format!(
+                        "virtual {} {}({}) = 0;",
+                        function.return_type.cpp_type().unwrap(),
+                        ident(&member.name),
+                        native_param_list(function)
+                    ));
+                }
+                Type::Callback(callback) => {
+                    let args =
+                        callback.args.iter().map(|t| t.cpp_type().unwrap()).collect::<Vec<_>>();
+                    let ret = callback.return_type.cpp_type().unwrap();
+                    let ty = format!("slint::private_api::Callback<{ret}({})>", args.join(", "));
+                    let call_args = native_param_names(callback).join(", ");
+                    protected.push(format!(
+                        "{ret} {}({}) const {{ return {field}->call({call_args}); }}",
+                        cpp_accessor_name(&member.name, AccessorKind::Invoker),
+                        native_param_list(callback)
+                    ));
+                    private.push(format!("{ty} *{field} = nullptr;"));
+                    bind_params.push(format!("{ty} *{field}"));
+                    bind_assignments.push(format!("native.{field} = {field};"));
+                }
+                ty => {
+                    let cpp_ty = ty.cpp_type().unwrap();
+                    let is_input =
+                        member.visibility == crate::object_tree::PropertyVisibility::Input;
+                    let is_input_or_inout =
+                        member.visibility != crate::object_tree::PropertyVisibility::Output;
+                    let property = format!("slint::private_api::Property<{cpp_ty}>");
+                    let pointer = if is_input {
+                        format!("const {property} *")
+                    } else {
+                        format!("{property} *")
+                    };
+                    protected.push(format!(
+                        "{cpp_ty} {}() const {{ return {field}->get(); }}",
+                        cpp_accessor_name(&member.name, AccessorKind::Getter)
+                    ));
+                    if !is_input {
+                        protected.push(format!(
+                            "void {}(const {cpp_ty} &value) const {{ {field}->set(value); }}",
+                            cpp_accessor_name(&member.name, AccessorKind::Setter)
+                        ));
+                    }
+                    private.push(format!("{pointer}{field} = nullptr;"));
+                    bind_params.push(format!("{pointer}{field}"));
+                    bind_assignments.push(format!("native.{field} = {field};"));
+
+                    let flag = format!("is_set_{}", concatenate_ident(&member.name));
+                    protected.push(format!(
+                        "bool is_{}_set() const {{ return {flag}; }}",
+                        concatenate_ident(&member.name)
+                    ));
+                    private.push(format!("bool {flag} = false;"));
+                    bind_params.push(format!("bool {flag}"));
+                    bind_assignments.push(format!("native.{flag} = {flag};"));
+
+                    if is_input_or_inout {
+                        let changed = format!("{}_changed", concatenate_ident(&member.name));
+                        hooks.push(format!("virtual void {changed}() {{}}"));
+                        binder_forwarders.push(format!(
+                            "static void {changed}({name} &native) {{ native.{changed}(); }}"
+                        ));
+                    }
+                }
+            }
+        }
+        let mut text = format!("class {name} {{\npublic:\n");
+        text.push_str(&format!("    {name}() = default;\n"));
+        text.push_str(&format!("    virtual ~{name}() = default;\n"));
+        text.push_str(&format!("    {name}(const {name} &) = delete;\n"));
+        text.push_str(&format!("    {name} &operator=(const {name} &) = delete;\n"));
+        text.push_str(&format!("    static std::unique_ptr<{name}> create();\n"));
+        for line in &public {
+            text.push_str(&format!("    {line}\n"));
+        }
+        text.push_str("protected:\n");
+        for line in hooks.iter().chain(&protected) {
+            text.push_str(&format!("    {line}\n"));
+        }
+        text.push_str("private:\n");
+        text.push_str(&format!("    friend struct {binder};\n"));
+        for line in &private {
+            text.push_str(&format!("    {line}\n"));
+        }
+        text.push_str("};\n");
+        text.push_str(&format!("struct {binder} {{\n"));
+        text.push_str(&format!(
+            "    static void bind({name} &native{}) {{\n",
+            bind_params.iter().map(|p| format!(", {p}")).join("")
+        ));
+        for line in &bind_assignments {
+            text.push_str(&format!("        {line}\n"));
+        }
+        text.push_str("    }\n");
+        text.push_str(&format!("    static void init({name} &native) {{ native.init(); }}\n"));
+        for line in &binder_forwarders {
+            text.push_str(&format!("    {line}\n"));
+        }
+        text.push_str("};\n");
+        file.declarations.push(Declaration::Raw(text));
+    }
 }
 
 pub fn generate_types(used_types: &[Type], config: &Config, unit: &llr::CompilationUnit) -> File {
@@ -2647,6 +2790,14 @@ fn generate_sub_component(
 
     init.extend(properties_init_code);
 
+    // After the bindings of the whole component are set, and before its `init` callback.
+    for (i, instance) in component.native_components.iter().enumerate() {
+        user_init.push(format!(
+            "slint_internal_{}_binder::init(*self->native{i});",
+            ident(&instance.class_name)
+        ));
+    }
+
     user_init.extend(component.init_code.iter().map(|e| {
         let mut expr_str = compile_expression(&e.borrow(), &ctx);
         expr_str.push(';');
@@ -2691,6 +2842,10 @@ fn generate_sub_component(
                 ..Default::default()
             }),
         ));
+    }
+
+    for (i, instance) in component.native_components.iter().enumerate() {
+        init.extend(native_component_init(i, instance, root, &ctx));
     }
 
     target_struct.members.extend(
@@ -2946,6 +3101,77 @@ fn generate_sub_component(
             }),
         ));
     }
+
+    // Last, so the native objects are destroyed before the properties they point to.
+    for (i, instance) in component.native_components.iter().enumerate() {
+        target_struct.members.push((
+            field_access,
+            Declaration::Var(Var {
+                ty: format_smolstr!("std::unique_ptr<{}>", ident(&instance.class_name)),
+                name: format_smolstr!("native{i}"),
+                ..Default::default()
+            }),
+        ));
+    }
+}
+
+fn native_component_init(
+    index: usize,
+    instance: &llr::NativeComponentInstance,
+    unit: &llr::CompilationUnit,
+    ctx: &EvaluationContext,
+) -> Vec<String> {
+    let class = unit
+        .native_component_classes
+        .iter()
+        .find(|c| c.name == instance.class_name)
+        .expect("class of a native component instance");
+    let class_name = ident(&class.name);
+    let field = format!("self->native{index}");
+    let address = |reference: &llr::MemberReference| {
+        access_member(reference, ctx).map_or_default(|x| format!("&{x}"))
+    };
+    let pointers = class
+        .members
+        .iter()
+        .filter_map(|member| match &member.ty {
+            Type::Function(_) => None,
+            Type::Callback(_) => instance
+                .callbacks
+                .iter()
+                .find(|(name, _)| *name == member.name)
+                .map(|(_, reference)| address(reference)),
+            _ => instance
+                .properties
+                .iter()
+                .find(|p| p.name == member.name)
+                .map(|p| format!("{}, {}", address(&p.reference), p.is_set)),
+        })
+        .join(", ");
+    let mut code = vec![
+        format!("{field} = {class_name}::create();"),
+        format!(
+            "slint_internal_{class_name}_binder::bind(*{field}{}{pointers});",
+            if pointers.is_empty() { "" } else { ", " }
+        ),
+    ];
+    for (name, reference) in &instance.functions {
+        code.push(access_member(reference, ctx).then(|x| {
+            format!(
+                "{x}.set_handler([native = {field}.get()](auto &&...args) {{ return native->{}(args...); }})",
+                ident(name)
+            ) + ";"
+        }));
+    }
+    for (name, reference) in &instance.changed {
+        code.push(access_member(reference, ctx).then(|x| {
+            format!(
+                "{x}.set_handler([native = {field}.get()](auto &&...) {{ slint_internal_{class_name}_binder::{}_changed(*native); }})",
+                concatenate_ident(name)
+            ) + ";"
+        }));
+    }
+    code
 }
 
 /// The `cross-axis-self-alignment` and `layout-order` fields of a repeated box

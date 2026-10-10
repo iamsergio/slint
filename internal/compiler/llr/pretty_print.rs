@@ -226,6 +226,26 @@ impl PrettyPrinter<'_> {
                 DisplayExpression(&t.triggered.borrow(), &ctx)
             )?
         }
+        for n in &sc.native_components {
+            self.indent()?;
+            write!(self.writer, "native {} {{", n.class_name)?;
+            for p in &n.properties {
+                let set = if p.is_set { " (set)" } else { "" };
+                write!(
+                    self.writer,
+                    " {}{set}: {};",
+                    p.name,
+                    DisplayPropertyRef(&p.reference, &ctx)
+                )?;
+            }
+            for (name, r) in &n.changed {
+                write!(self.writer, " changed {name}: {};", DisplayPropertyRef(r, &ctx))?;
+            }
+            for (name, r) in n.callbacks.iter().chain(&n.functions) {
+                write!(self.writer, " {name}: {};", DisplayPropertyRef(r, &ctx))?;
+            }
+            writeln!(self.writer, " }};")?
+        }
         for (sub_component_index, ssc) in sc.sub_components.iter_enumerated() {
             if let Some(use_site) = sc
                 .debug_info

@@ -1,0 +1,41 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+export native component WithBody {
+    in property <int> limit;
+    function start() { }
+//                   > <error{Function declarations in a native component must not have a body}
+}
+
+export native component WithBinding {
+    in property <int> a: 4;
+//                       ><error{A native component cannot have bindings; set the value where you use it}
+    in-out property <int> b <=> c;
+//                          >    <error{A native component cannot have bindings; set the value where you use it}
+    in-out property <int> c;
+    property <int> d;
+//  >               <error{'private' properties are inaccessible in a native component}
+}
+
+export native component WithContent {
+    Rectangle { }
+//  >           <error{A native component cannot have sub elements}
+    callback init;
+//  >            <error{A native component cannot have an 'init' callback}
+}
+
+export native component ReservedName {
+    function init();
+//  >              <error{A native component can't have a function named 'init'; the generated class reserves it for initialization}
+}
+
+export native component Finder { }
+
+component Implements {
+    implement Finder <=> self;
+//            >     <error{Cannot implement Finder. It is not an interface}
+}
+
+export component Root inherits Window {
+    Implements { }
+}

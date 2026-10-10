@@ -1,0 +1,153 @@
+---
+title: Native Component
+description: Experimental non-visual elements implemented in C++.
+---
+
+A `native component` declares a non-visual element that you implement in C++ instead of in Slint.
+Use it to connect a `.slint` file to application logic, such as a background search, a network client, or a device driver, without routing every value through the root component.
+
+> **Note**: `native component` is experimental, subject to change, and supported only when generating C++.
+> The Rust generator, the `slint!` macro, and Slint SC report an error when a `.slint` file instantiates one.
+
+## Declaring a Native Component
+
+Use the `native component` keywords followed by a body that lists the members.
+
+```slint no-test
+export native component PrimeFinder {
+    in property <int> limit;
+    out property <int> found;
+    out property <bool> busy;
+    callback finished(count: int);
+    function start();
+    function stop();
+}
+```
+
+The body may contain:
+
+- Properties with visibility `in`, `out`, or `in-out`.
+  Default values and bindings are not permitted.
+- Callbacks, with any signature except `init`.
+- Function declarations without a body.
+  Functions are public, and you can mark them `pure`.
+
+## Using a Native Component
+
+Instantiate the component like any other element, and bind its properties, handle its callbacks, and call its functions.
+
+```slint no-test
+export component AppWindow inherits Window {
+    for limit in [1000, 50000, 2000000]: Rectangle {
+        finder := PrimeFinder {
+            limit: limit;
+            finished(n) => { debug("done", n); }
+        }
+        TouchArea { clicked => { finder.start(); } }
+        Text { text: finder.busy ? "…" : finder.found; }
+    }
+}
+```
+
+Each instance gets its own C++ object, so every row of the `for` above has independent state.
+
+An instance has no visual representation and takes no part in layout or input.
+It can't have children.
+It also can't be the root of a component, or be repeated or conditional by itself.
+To repeat it, wrap it in another element as in the example.
+
+## Implementing the C++ Class
+
+The C++ generator emits an abstract class named after the declaration, with:
+
+- a pure virtual function for each `function`;
+- protected `get_<name>()` accessors for every property;
+- protected `set_<name>()` setters for `out` and `in-out` properties;
+- protected `invoke_<name>()` functions for every callback;
+- a protected `is_<name>_set()` function for every property;
+- a protected virtual `init()` function, and a protected virtual `<name>_changed()` function for every `in` and `in-out` property.
+  They do nothing by default.
+
+Derive from the class, implement the functions, and define the static `create()` factory.
+Slint calls `create()` once for each instance, and destroys the object when the instance goes away.
+
+```cpp
+class PrimeFinderImpl : public PrimeFinder
+{
+public:
+    void init() override
+    {
+        set_busy(false);
+    }
+    void limit_changed() override
+    {
+        if (get_busy())
+            start();
+    }
+    void start() override
+    {
+        set_busy(true);
+        // ...
+        invoke_finished(count);
+        set_busy(false);
+    }
+    void stop() override { set_busy(false); }
+};
+
+std::unique_ptr<PrimeFinder> PrimeFinder::create()
+{
+    return std::make_unique<PrimeFinderImpl>();
+}
+```
+
+The accessors are bound to the instance after `create()` returns.
+Don't call them from the constructor, use `init()` instead.
+
+### Initialization
+
+`init()` is called once for each instance, after the accessors are bound, the bindings of the instance and of its enclosing components are set, and the functions and callbacks are connected.
+It runs before the `init` callback of the component that contains the instance.
+Use it to read the initial values of the `in` properties, push the initial values of the `out` properties with `set_<name>()`, and start work.
+Changes you make to an `in-out` property in `init()` are not reported by `<name>_changed()`.
+
+### Change Notification
+
+`<name>_changed()` tells you that the value of an `in` or `in-out` property changed, whether the cause is a binding, an assignment in the `.slint` file, a two-way binding, or, for `in-out` properties, a `set_<name>()` of the native object.
+It behaves exactly like a `changed` handler in Slint:
+
+- It is asynchronous: it's called from the event loop, not from within the setter, and several changes in a row give a single call. Read the current value with `get_<name>()`.
+- It is not called for the initial value, so read the initial values in `init()`.
+- It is called in addition to a `changed` handler that you write on the same property of the instance, and not instead of it.
+- A `set_<name>()` in `<name>_changed()` of an `in-out` property that changes the value calls `<name>_changed()` again.
+
+`out` properties have no `<name>_changed()`, as only the native object can change them.
+
+### Properties the `.slint` File Doesn't Set
+
+`is_<name>_set()` returns `true` if the instance sets the property, and `false` if it leaves it alone.
+A property is set when the instantiation gives it a value, a binding, or a two-way binding (`<=>`), whether it's written on the instance or on the other property, or when a state sets it.
+This is decided when compiling the `.slint` file, and doesn't change at run-time.
+Use it to keep a default of your own, rather than the default of the type, for the properties that are not set:
+
+```cpp
+void init() override
+{
+    // Keep the default of the member, `limit = 1000`, unless the .slint file sets one
+    if (is_limit_set())
+        limit = get_limit();
+}
+```
+
+The function exists for `out` properties too, where it is always `false`.
+
+Native objects live on the UI thread.
+Call the accessors only from that thread, for example from a `slint::Timer` callback, and don't use them from other threads.
+
+## Preview and Interpreter
+
+The Slint interpreter, and the tools and language bindings built on it, such as the live preview, `slint-viewer`, Node.js, and Python, accept native components, but they have no C++ implementation to run.
+Instances are inert: properties keep the values you bind, functions return default values, and callbacks are never invoked by native code.
+
+## Example
+
+The [native-component example](https://github.com/slint-ui/slint/tree/master/examples/native-component) implements the `PrimeFinder` above with a `slint::Timer`.

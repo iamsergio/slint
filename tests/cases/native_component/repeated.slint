@@ -1,0 +1,93 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Finder {
+    in property <int> limit;
+    in-out property <int> shared;
+    callback finished(count: int);
+}
+
+export component TestCase inherits Window {
+    width: 100px;
+    height: 100px;
+    in property <[int]> limits;
+    in-out property <int> total;
+    in-out property <int> shared;
+
+    for limit in limits: Rectangle {
+        Finder {
+            limit: limit;
+            shared <=> root.shared;
+            finished(n) => {
+                root.total += n;
+            }
+        }
+    }
+}
+
+/*
+```cpp.toplevel
+class FinderImpl : public Finder
+{
+public:
+    static inline std::vector<FinderImpl *> all;
+    static inline int destroyed = 0;
+
+    FinderImpl() { all.push_back(this); }
+    ~FinderImpl() override
+    {
+        destroyed++;
+        all.erase(std::find(all.begin(), all.end(), this));
+    }
+
+    int seen_limit() const { return get_limit(); }
+    void done(int n) const { invoke_finished(n); }
+    int shared() const { return get_shared(); }
+    void share(int n) const { set_shared(n); }
+};
+
+std::unique_ptr<Finder> Finder::create()
+{
+    return std::make_unique<FinderImpl>();
+}
+```
+
+```cpp
+{
+    auto handle = TestCase::create();
+    const TestCase &instance = *handle;
+    auto model = std::make_shared<slint::VectorModel<int>>(std::vector<int> { 100, 200, 300 });
+    instance.set_limits(model);
+    slint_testing::send_mouse_click(&instance, 5., 5.);
+
+    assert_eq(FinderImpl::all.size(), 3u);
+    assert_eq(FinderImpl::all[0]->seen_limit(), 100);
+    assert_eq(FinderImpl::all[1]->seen_limit(), 200);
+    assert_eq(FinderImpl::all[2]->seen_limit(), 300);
+
+    FinderImpl::all[0]->done(1);
+    FinderImpl::all[2]->done(5);
+    assert_eq(instance.get_total(), 6);
+
+    instance.set_shared(9);
+    assert_eq(FinderImpl::all[0]->shared(), 9);
+    assert_eq(FinderImpl::all[2]->shared(), 9);
+    FinderImpl::all[1]->share(4);
+    assert_eq(instance.get_shared(), 4);
+    assert_eq(FinderImpl::all[0]->shared(), 4);
+
+    model->set_row_data(1, 250);
+    assert_eq(FinderImpl::all[1]->seen_limit(), 250);
+    assert_eq(FinderImpl::all[0]->seen_limit(), 100);
+
+    model->erase(2);
+    slint_testing::send_mouse_click(&instance, 5., 5.);
+    assert_eq(FinderImpl::all.size(), 2u);
+    assert_eq(FinderImpl::destroyed, 1);
+}
+assert_eq(FinderImpl::all.size(), 0u);
+assert_eq(FinderImpl::destroyed, 3);
+```
+*/

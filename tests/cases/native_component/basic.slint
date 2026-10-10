@@ -1,0 +1,97 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Finder {
+    in property <int> limit;
+    out property <int> found;
+    out property <bool> busy;
+    callback finished(count: int);
+    pure function add(a: int, b: int) -> int;
+    function start();
+}
+
+export component TestCase {
+    in property <int> limit: 10;
+    out property <int> found: finder.found;
+    out property <bool> busy: finder.busy;
+    out property <int> added: finder.add(2, 3);
+    out property <string> last-message;
+    callback begin();
+
+    begin => {
+        finder.start();
+    }
+
+    Rectangle {
+        finder := Finder {
+            limit: root.limit;
+            finished(n) => {
+                root.last-message = "done " + n;
+            }
+        }
+    }
+}
+
+/*
+```cpp.toplevel
+class FinderImpl : public Finder
+{
+public:
+    static inline FinderImpl *last = nullptr;
+    static inline int alive = 0;
+
+    FinderImpl()
+    {
+        last = this;
+        alive++;
+    }
+    ~FinderImpl() override { alive--; }
+
+    int add(int a, int b) override { return a + b; }
+    void start() override
+    {
+        set_busy(true);
+        set_found(get_limit() * 2);
+        invoke_finished(get_limit());
+        set_busy(false);
+    }
+    int seen_limit() const { return get_limit(); }
+    void report(int n) const { set_found(n); }
+};
+
+std::unique_ptr<Finder> Finder::create()
+{
+    return std::make_unique<FinderImpl>();
+}
+```
+
+```cpp
+{
+    auto handle = TestCase::create();
+    const TestCase &instance = *handle;
+    assert_eq(FinderImpl::alive, 1);
+    assert_eq(FinderImpl::last->seen_limit(), 10);
+
+    assert_eq(instance.get_added(), 5);
+    assert_eq(instance.get_found(), 0);
+    assert(!instance.get_busy());
+
+    instance.invoke_begin();
+    assert_eq(instance.get_found(), 20);
+    assert(!instance.get_busy());
+    assert_eq(instance.get_last_message(), "done 10");
+
+    instance.set_limit(7);
+    assert_eq(FinderImpl::last->seen_limit(), 7);
+    instance.invoke_begin();
+    assert_eq(instance.get_found(), 14);
+    assert_eq(instance.get_last_message(), "done 7");
+
+    FinderImpl::last->report(42);
+    assert_eq(instance.get_found(), 42);
+}
+assert_eq(FinderImpl::alive, 0);
+```
+*/

@@ -165,6 +165,9 @@ fn do_move_declarations(component: &Rc<Component>, renames: &RenameMap) {
         fixup_reference(&mut t.running, renames);
         fixup_reference(&mut t.triggered, renames);
     });
+    component.native_components.borrow_mut().iter_mut().for_each(|n| {
+        n.named_references_mut().for_each(|nr| fixup_reference(nr, renames));
+    });
     component.menu_item_tree.borrow_mut().iter_mut().for_each(|c| {
         visit_all_named_references(c, &mut |nr| fixup_reference(nr, renames));
     });

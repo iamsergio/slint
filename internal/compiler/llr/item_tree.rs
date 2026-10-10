@@ -3,6 +3,7 @@
 
 use super::{EvaluationContext, EvaluationScope, Expression, ParentScope};
 use crate::langtype::{NativeClass, Type};
+use crate::object_tree::PropertyVisibility;
 use derive_more::{From, Into};
 use smol_str::SmolStr;
 use std::cell::{Cell, RefCell};
@@ -542,6 +543,7 @@ pub struct SubComponent {
     /// The MenuItem trees. The index is stored in a Expression::NumberLiteral in the arguments of BuiltinFunction::ShowPopupMenu and BuiltinFunction::SetupMenuBar
     pub menu_item_trees: Vec<ItemTree>,
     pub timers: TiVec<TimerIdx, Timer>,
+    pub native_components: Vec<NativeComponentInstance>,
     pub sub_components: TiVec<SubComponentInstanceIdx, SubComponentInstance>,
     /// The initial value or binding for properties.
     /// This is ordered in the order they must be set.
@@ -639,6 +641,42 @@ pub struct PopupMenu {
     pub activated: MemberReference,
     pub close: MemberReference,
     pub entries: MemberReference,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeComponentInstance {
+    pub class_name: SmolStr,
+    pub properties: Vec<NativeProperty>,
+    pub callbacks: Vec<(SmolStr, MemberReference)>,
+    /// For each `in` and `in-out` property, the hidden callback its `changed` handler invokes;
+    /// the generated class forwards it to `<name>_changed()`.
+    pub changed: Vec<(SmolStr, MemberReference)>,
+    /// Converted from functions; their handler forwards to the native object.
+    pub functions: Vec<(SmolStr, MemberReference)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeProperty {
+    pub name: SmolStr,
+    pub reference: MemberReference,
+    pub visibility: PropertyVisibility,
+    /// Whether the instantiation sets the property: with a binding, a constant, or `<=>`.
+    pub is_set: bool,
+}
+
+/// The class a `native component` declaration generates, in the declaration's member order.
+#[derive(Debug, Clone)]
+pub struct NativeComponentClass {
+    pub name: SmolStr,
+    pub members: Vec<NativeMember>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeMember {
+    pub name: SmolStr,
+    /// A property type, or `Type::Callback` or `Type::Function`.
+    pub ty: Type,
+    pub visibility: PropertyVisibility,
 }
 
 #[derive(Debug, Clone)]
@@ -756,6 +794,7 @@ pub struct CompilationUnit {
     pub sub_components: TiVec<SubComponentIdx, SubComponent>,
     /// The sub-components that are not item-tree root
     pub used_sub_components: Vec<SubComponentIdx>,
+    pub native_component_classes: Vec<NativeComponentClass>,
     pub globals: TiVec<GlobalIdx, GlobalComponent>,
     pub popup_menu: Option<PopupMenu>,
     pub has_debug_info: bool,

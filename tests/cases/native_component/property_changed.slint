@@ -1,0 +1,244 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Watcher {
+    in property <int> limit;
+    in-out property <int> level;
+    in-out property <int> gain;
+    in-out property <int> shared;
+    out property <int> result;
+}
+
+global Shared {
+    in-out property <int> value;
+}
+
+component Inner {
+    in property <int> limit;
+    out property <int> seen: watcher.result;
+
+    Rectangle {
+        watcher := Watcher {
+            limit: root.limit;
+        }
+    }
+}
+
+export component TestCase inherits Window {
+    width: 100px;
+    height: 100px;
+    in property <[int]> limits;
+    in property <int> limit;
+    in-out property <int> level;
+    in property <int> gain;
+    in property <int> inner-limit;
+    in-out property <int> user-limit-changes;
+    in-out property <int> user-level-changes;
+    out property <int> result: watcher.result;
+    out property <int> inner-seen: inner.seen;
+
+    public function assign-shared(v: int) {
+        Shared.value = v;
+    }
+    public function assign-limit(v: int) {
+        watcher.limit = v;
+    }
+    public function assign-level(v: int) {
+        watcher.level = v;
+    }
+
+    Rectangle {
+        watcher := Watcher {
+            limit: root.limit;
+            level <=> root.level;
+            gain: root.gain;
+            shared <=> Shared.value;
+            changed limit => {
+                root.user-limit-changes += 1;
+            }
+            changed level => {
+                root.user-level-changes += 1;
+            }
+        }
+    }
+    inner := Inner {
+        limit: root.inner-limit;
+    }
+    for l in limits: Rectangle {
+        Watcher {
+            limit: l;
+        }
+    }
+}
+
+/*
+```cpp.toplevel
+class WatcherImpl : public Watcher
+{
+public:
+    static inline std::vector<WatcherImpl *> all;
+    int limit_changes = 0;
+    int level_changes = 0;
+    int gain_changes = 0;
+    int shared_changes = 0;
+    int limit_seen = -1;
+    int level_seen = -1;
+
+    WatcherImpl() { all.push_back(this); }
+    ~WatcherImpl() override { all.erase(std::find(all.begin(), all.end(), this)); }
+
+    void init() override
+    {
+        // Not reported as a change: the change trackers start after init()
+        set_result(100);
+    }
+    void limit_changed() override
+    {
+        limit_changes++;
+        limit_seen = get_limit();
+        // Setting an out property doesn't call back
+        set_result(get_result() + 1);
+    }
+    void level_changed() override
+    {
+        level_changes++;
+        level_seen = get_level();
+    }
+    void gain_changed() override { gain_changes++; }
+    void shared_changed() override { shared_changes++; }
+
+    void set_level_from_native(int v) { set_level(v); }
+    void set_result_from_native(int v) { set_result(v); }
+
+    // Only in and in-out properties have a `_changed()` function to override.
+    // This is checked from inside the class as the function would be protected.
+    template<typename T = WatcherImpl>
+    static constexpr bool has_result_changed()
+    {
+        return requires(T &t) { t.result_changed(); };
+    }
+    static constexpr bool has_gain_changed()
+    {
+        return requires(WatcherImpl &t) { t.gain_changed(); };
+    }
+};
+
+std::unique_ptr<Watcher> Watcher::create()
+{
+    return std::make_unique<WatcherImpl>();
+}
+```
+
+```cpp
+static_assert(!WatcherImpl::has_result_changed());
+static_assert(WatcherImpl::has_gain_changed());
+
+auto handle = TestCase::create();
+const TestCase &instance = *handle;
+// the top-level one is the second, after the one of the sub-component
+auto &inner = *WatcherImpl::all[0];
+auto &w = *WatcherImpl::all[1];
+assert_eq(WatcherImpl::all.size(), 2u);
+
+// Nothing is reported for the initial values, nor synchronously
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.limit_changes, 0);
+assert_eq(w.level_changes, 0);
+assert_eq(w.gain_changes, 0);
+assert_eq(inner.limit_changes, 0);
+assert_eq(instance.get_user_limit_changes(), 0);
+assert_eq(instance.get_result(), 100);
+
+// A change of the binding is reported asynchronously, once
+instance.set_limit(5);
+assert_eq(w.limit_changes, 0);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.limit_changes, 1);
+assert_eq(w.limit_seen, 5);
+assert_eq(instance.get_result(), 101);
+// together with the user's own changed handler
+assert_eq(instance.get_user_limit_changes(), 1);
+instance.set_limit(5);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.limit_changes, 1);
+
+// Several changes at once give one notification, with the last value
+instance.set_limit(6);
+instance.set_limit(7);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.limit_changes, 2);
+assert_eq(w.limit_seen, 7);
+assert_eq(instance.get_user_limit_changes(), 2);
+// the other properties and instances are not affected
+assert_eq(w.level_changes, 0);
+assert_eq(w.gain_changes, 0);
+assert_eq(inner.limit_changes, 0);
+
+// Assigned imperatively from .slint
+instance.invoke_assign_limit(9);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.limit_changes, 3);
+assert_eq(w.limit_seen, 9);
+assert_eq(instance.get_user_limit_changes(), 3);
+
+// An in-out property that is aliased to a root property
+instance.set_level(3);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.level_changes, 1);
+assert_eq(w.level_seen, 3);
+assert_eq(instance.get_user_level_changes(), 1);
+instance.invoke_assign_level(4);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.level_changes, 2);
+assert_eq(w.level_seen, 4);
+assert_eq(instance.get_level(), 4);
+assert_eq(instance.get_user_level_changes(), 2);
+
+// The native object sets an in-out property: that is a change like any other
+w.set_level_from_native(10);
+assert_eq(instance.get_level(), 10);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.level_changes, 3);
+assert_eq(w.level_seen, 10);
+assert_eq(instance.get_user_level_changes(), 3);
+
+// An in-out property with a plain binding
+instance.set_gain(2);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.gain_changes, 1);
+
+// An in-out property that is two-way bound to a global
+instance.invoke_assign_shared(8);
+slint_testing::mock_elapsed_time(100);
+assert_eq(w.shared_changes, 1);
+
+// Out properties don't notify
+w.set_result_from_native(500);
+slint_testing::mock_elapsed_time(100);
+assert_eq(instance.get_result(), 500);
+assert_eq(w.limit_changes, 3);
+
+// In a sub-component
+instance.set_inner_limit(11);
+slint_testing::mock_elapsed_time(100);
+assert_eq(inner.limit_changes, 1);
+assert_eq(inner.limit_seen, 11);
+assert_eq(instance.get_inner_seen(), 101);
+assert_eq(w.limit_changes, 3);
+
+// In repeated instances
+auto model = std::make_shared<slint::VectorModel<int>>(std::vector<int> { 100, 200 });
+instance.set_limits(model);
+slint_testing::send_mouse_click(&instance, 5., 5.);
+slint_testing::mock_elapsed_time(100);
+assert_eq(WatcherImpl::all.size(), 4u);
+assert_eq(WatcherImpl::all[2]->limit_changes, 0);
+model->set_row_data(1, 250);
+slint_testing::mock_elapsed_time(100);
+assert_eq(WatcherImpl::all[2]->limit_changes, 0);
+assert_eq(WatcherImpl::all[3]->limit_changes, 1);
+assert_eq(WatcherImpl::all[3]->limit_seen, 250);
+```
+*/
