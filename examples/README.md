@@ -40,6 +40,7 @@ These examples demonstrate specialized features or integrations:
 | [orbit-animation](./orbit-animation/) | Orbital animation effects |
 | [sprite-sheet](./sprite-sheet/) | Sprite sheet animation |
 | [repeater](./repeater/) | Demonstrates the `for` repeater element |
+| [native-component](./native-component/) | C++-only example of an experimental `native component` implemented in C++ |
 | [gstreamer-player](./gstreamer-player/) | Video playback using GStreamer |
 | [wgpu_texture](./wgpu_texture/) | Custom rendering with wgpu into a Slint texture |
 

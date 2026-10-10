@@ -1,0 +1,58 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
+
+import { Button, ProgressIndicator, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export native component PrimeFinder {
+    in property <int> limit;
+    out property <int> found;
+    out property <float> progress;
+    out property <bool> busy;
+    callback finished(count: int);
+    function start();
+    function stop();
+}
+
+export component AppWindow inherits Window {
+    title: "Native Component";
+    preferred-width: 520px;
+
+    VerticalBox {
+        for limit in [1000, 50000, 2000000]: HorizontalBox {
+            property <string> status: "Idle";
+
+            finder := PrimeFinder {
+                limit: limit;
+                finished(count) => {
+                    status = "Found \{count} primes";
+                }
+            }
+
+            Text {
+                text: "Up to \{limit}";
+                vertical-alignment: center;
+                min-width: 110px;
+            }
+            Button {
+                text: finder.busy ? "Stop" : "Start";
+                clicked => {
+                    if (finder.busy) {
+                        finder.stop();
+                        status = "Stopped at \{finder.found}";
+                    } else {
+                        finder.start();
+                        status = "Searching";
+                    }
+                }
+            }
+            ProgressIndicator {
+                progress: finder.progress;
+            }
+            Text {
+                text: status;
+                vertical-alignment: center;
+                min-width: 140px;
+            }
+        }
+    }
+}
