@@ -1,0 +1,56 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Finder {
+    in property <int> limit;
+    out property <int> starts;
+    function start();
+}
+
+export component TestCase {
+    in property <int> limit;
+    out property <int> starts: finder.starts;
+
+    Rectangle {
+        finder := Finder {
+            limit: root.limit;
+            changed limit => {
+                self.start();
+            }
+        }
+    }
+}
+
+/*
+```cpp.toplevel
+class FinderImpl : public Finder
+{
+public:
+    static inline FinderImpl *last = nullptr;
+    FinderImpl() { last = this; }
+    void start() override { set_starts(get_starts() + 1); }
+};
+
+std::unique_ptr<Finder> Finder::create()
+{
+    return std::make_unique<FinderImpl>();
+}
+```
+
+```cpp
+auto handle = TestCase::create();
+const TestCase &instance = *handle;
+slint_testing::mock_elapsed_time(100);
+assert_eq(instance.get_starts(), 0);
+
+instance.set_limit(5);
+slint_testing::mock_elapsed_time(100);
+assert_eq(instance.get_starts(), 1);
+
+instance.set_limit(6);
+slint_testing::mock_elapsed_time(100);
+assert_eq(instance.get_starts(), 2);
+```
+*/

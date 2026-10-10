@@ -1,0 +1,96 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+//ignore: rust,js,pyi,d.ts,interpreter,cpp-live-preview,live-preview
+
+native component Counter {
+    in property <int> step;
+    out property <int> value;
+    function bump();
+}
+
+component Row {
+    in property <int> step;
+    out property <int> value: counter.value;
+    public function bump() {
+        counter.bump();
+    }
+
+    Rectangle {
+        counter := Counter {
+            step: root.step;
+        }
+    }
+}
+
+export component TestCase inherits Window {
+    width: 100px;
+    height: 100px;
+    in property <[int]> steps;
+    out property <int> first: first-row.value;
+    out property <int> second: second-row.value;
+    callback bump-first();
+    callback bump-second();
+
+    bump-first => {
+        first-row.bump();
+    }
+    bump-second => {
+        second-row.bump();
+    }
+
+    first-row := Row {
+        step: 1;
+    }
+    second-row := Row {
+        step: 10;
+    }
+    for step in steps: Row {
+        step: step;
+    }
+}
+
+/*
+```cpp.toplevel
+class CounterImpl : public Counter
+{
+public:
+    static inline std::vector<CounterImpl *> all;
+    CounterImpl() { all.push_back(this); }
+    ~CounterImpl() override { all.erase(std::find(all.begin(), all.end(), this)); }
+
+    void bump() override { set_value(get_value() + get_step()); }
+    int value() const { return get_value(); }
+};
+
+std::unique_ptr<Counter> Counter::create()
+{
+    return std::make_unique<CounterImpl>();
+}
+```
+
+```cpp
+{
+    auto handle = TestCase::create();
+    const TestCase &instance = *handle;
+    assert_eq(CounterImpl::all.size(), 2u);
+
+    instance.invoke_bump_first();
+    instance.invoke_bump_first();
+    instance.invoke_bump_second();
+    assert_eq(instance.get_first(), 2);
+    assert_eq(instance.get_second(), 10);
+
+    instance.set_steps(std::make_shared<slint::VectorModel<int>>(std::vector<int> { 100, 1000 }));
+    slint_testing::send_mouse_click(&instance, 5., 5.);
+    assert_eq(CounterImpl::all.size(), 4u);
+    CounterImpl::all[2]->bump();
+    CounterImpl::all[3]->bump();
+    CounterImpl::all[3]->bump();
+    assert_eq(CounterImpl::all[2]->value(), 100);
+    assert_eq(CounterImpl::all[3]->value(), 2000);
+    assert_eq(instance.get_first(), 2);
+}
+assert_eq(CounterImpl::all.size(), 0u);
+```
+*/
