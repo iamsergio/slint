@@ -1395,6 +1395,8 @@ impl GlyphRenderer for QtItemRenderer<'_> {
                         // Workaround a Qt bug to resolve https://github.com/slint-ui/slint/issues/10568
                         // There is a bug in Qt in which drawGlyphRun is not drawing correctly bigger fonts
 
+                        // No pen, or the glyphs get an outline with the pen of whatever was painted before
+                        (*painter)->setPen(Qt::NoPen);
                         (*painter)->setBrush(qt_brush);
                         QPainterPath path;
                         for (int i = 0; i < size; i++) {
