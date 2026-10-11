@@ -1499,12 +1499,27 @@ impl GlyphRenderer for QtItemRenderer<'_> {
 
 cpp_class! {pub unsafe struct QRawFont as "QRawFont"}
 
+/// The `QFont::HintingPreference` of the glyphs, set by the SLINT_QT_FONT_HINTING environment variable
+/// (`default`, `none`, `vertical` or `full`). Upstream Slint disables hinting
+/// (https://github.com/slint-ui/slint/issues/9831), which makes the text thinner and blurrier than Qt's own, so the
+/// default here is the one of the system, as for Qt's own text.
+fn font_hinting() -> i32 {
+    static HINTING: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *HINTING.get_or_init(|| match std::env::var("SLINT_QT_FONT_HINTING").as_deref() {
+        Ok("none") => 1,
+        Ok("vertical") => 2,
+        Ok("full") => 3,
+        _ => 0, // QFont::PreferDefaultHinting
+    })
+}
+
 impl QRawFont {
     pub fn load_from_data(&mut self, data: &[u8], pixel_size: f32) {
         let font_data = qttypes::QByteArray::from(data);
-        cpp! { unsafe [ self as "QRawFont*", font_data as "QByteArray", pixel_size as "float"] {
-            // https://github.com/slint-ui/slint/issues/9831: Disable hinting, as it can cause bad positioned glyphs
-            self->loadFromData(font_data, pixel_size, QFont::PreferNoHinting);
+        let hinting = font_hinting();
+        cpp! { unsafe [ self as "QRawFont*", font_data as "QByteArray", pixel_size as "float", hinting as "int"] {
+            // https://github.com/slint-ui/slint/issues/9831: hinting can cause bad positioned glyphs, see font_hinting()
+            self->loadFromData(font_data, pixel_size, QFont::HintingPreference(hinting));
         }}
     }
 
@@ -1549,17 +1564,18 @@ fn raw_font_with_variations(
     tags: &[u32],
     values: &[f32],
 ) -> QRawFont {
+    let hinting = font_hinting();
     let family = qttypes::QString::from(family);
     let tags_ptr = tags.as_ptr();
     let values_ptr = values.as_ptr();
     let count: i32 = tags.len() as i32;
     cpp! { unsafe [family as "QString", pixel_size as "float",
                    tags_ptr as "const quint32*", values_ptr as "const float*",
-                   count as "int"] -> QRawFont as "QRawFont" {
+                   count as "int", hinting as "int"] -> QRawFont as "QRawFont" {
         #if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
         QFont font(family, -1);
         font.setPixelSize(pixel_size);
-        font.setHintingPreference(QFont::PreferNoHinting);
+        font.setHintingPreference(QFont::HintingPreference(hinting));
         for (int i = 0; i < count; i++) {
             auto tag = QFont::Tag::fromValue(tags_ptr[i]);
             if (tag)
