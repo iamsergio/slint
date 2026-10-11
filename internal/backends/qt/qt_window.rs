@@ -1590,6 +1590,17 @@ fn raw_font_with_variations(
     }}
 }
 
+/// The axes of a variable font, with their default value. Empty for other fonts.
+fn default_axes(font: &parley::FontData) -> Vec<(u32, f32)> {
+    use i_slint_common::sharedfontique::skrifa::{FontRef, MetadataProvider};
+    let Ok(font_ref) = FontRef::from_index(font.data.as_ref(), font.index) else { return Vec::new() };
+    font_ref
+        .axes()
+        .iter()
+        .map(|axis| (u32::from_be_bytes(axis.tag().to_be_bytes()), axis.default_value()))
+        .collect()
+}
+
 #[derive(Default)]
 pub struct FontCache {
     /// Fonts are indexed by unique blob id (atomically incremented in fontique) and the font collection index.
@@ -1636,18 +1647,21 @@ impl FontCache {
         pixel_size: f32,
         synthesis: &fontique::Synthesis,
     ) -> Option<QRawFont> {
-        let variation_settings = synthesis.variation_settings();
+        let mut variation_settings: Vec<(u32, f32)> = synthesis
+            .variation_settings()
+            .iter()
+            .map(|&(tag, value)| (u32::from_be_bytes(tag.to_be_bytes()), value))
+            .collect();
+        if variation_settings.is_empty() {
+            // QRawFont::loadFromData() of a variable font doesn't use its default axes (it gets the lightest weight),
+            // so give them explicitly.
+            variation_settings = default_axes(font);
+        }
         if variation_settings.is_empty() {
             return self.font(font);
         }
         let family = self.ensure_registered(font)?;
-        let (tags, values): (Vec<u32>, Vec<f32>) = variation_settings
-            .iter()
-            .map(|&(tag, value)| {
-                let bytes = tag.to_be_bytes();
-                (u32::from_be_bytes(bytes), value)
-            })
-            .unzip();
+        let (tags, values): (Vec<u32>, Vec<f32>) = variation_settings.into_iter().unzip();
         let raw_font = raw_font_with_variations(&family, pixel_size, &tags, &values);
         if raw_font.is_valid() { Some(raw_font) } else { self.font(font) }
     }
