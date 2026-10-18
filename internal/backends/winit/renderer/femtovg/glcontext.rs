@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use std::{num::NonZeroU32, sync::Arc};
+use std::{cell::Cell, num::NonZeroU32, sync::Arc};
 
 use crate::winit_compat::WindowSurfaceSizeExt;
 use glutin::{
@@ -18,6 +18,10 @@ pub struct OpenGLContext {
     context: glutin::context::PossiblyCurrentContext,
     surface: glutin::surface::Surface<glutin::surface::WindowSurface>,
     winit_window: Arc<winit::window::Window>,
+    /// The size of the last resize, which the surface may not have taken yet.
+    /// Only tracked on Wayland, where Mesa applies a resize to the next back buffer.
+    requested_size: Cell<Option<(NonZeroU32, NonZeroU32)>>,
+    is_wayland: bool,
 }
 
 unsafe impl i_slint_renderer_femtovg::opengl::OpenGLInterface for OpenGLContext {
@@ -32,9 +36,21 @@ unsafe impl i_slint_renderer_femtovg::opengl::OpenGLInterface for OpenGLContext 
     fn swap_buffers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.winit_window.pre_present_notify();
 
+        // Mesa on Wayland allocates a back buffer when the context is made current, and a resize
+        // only applies to the next one. A resize before the first swap thus renders the frame
+        // into a buffer of the old size, so draw another frame once the new size took effect.
+        let stale = self.requested_size.get().is_some_and(|(width, height)| {
+            self.surface.width().is_some_and(|w| w != width.get())
+                || self.surface.height().is_some_and(|h| h != height.get())
+        });
+
         self.surface.swap_buffers(&self.context).map_err(|glutin_error| -> PlatformError {
             format!("FemtoVG: Error swapping buffers: {glutin_error}").into()
         })?;
+
+        if stale {
+            self.winit_window.request_redraw();
+        }
 
         Ok(())
     }
@@ -46,6 +62,9 @@ unsafe impl i_slint_renderer_femtovg::opengl::OpenGLInterface for OpenGLContext 
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.ensure_current()?;
         self.surface.resize(&self.context, width, height);
+        if self.is_wayland {
+            self.requested_size.set(Some((width, height)));
+        }
 
         Ok(())
     }
@@ -174,6 +193,9 @@ impl OpenGLContext {
             height,
         );
 
+        let is_wayland =
+            matches!(raw_window_handle.as_raw(), raw_window_handle::RawWindowHandle::Wayland(_));
+
         let surface = unsafe {
             gl_display.create_window_surface(&gl_config, &attrs).map_err(|glutin_err| {
                 format!("Error creating OpenGL Window surface: {glutin_err}")
@@ -215,6 +237,15 @@ impl OpenGLContext {
 
         let window = Arc::new(window);
 
-        Ok((window.clone(), Self { context, surface, winit_window: window }))
+        Ok((
+            window.clone(),
+            Self {
+                context,
+                surface,
+                winit_window: window,
+                requested_size: Cell::new(None),
+                is_wayland,
+            },
+        ))
     }
 }
