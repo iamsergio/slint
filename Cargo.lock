@@ -3360,6 +3360,7 @@ dependencies = [
  "i-slint-core-macros",
  "i-slint-renderer-anyrender",
  "i-slint-renderer-femtovg",
+ "i-slint-renderer-impeller",
  "i-slint-renderer-skia",
  "i-slint-renderer-software",
  "imgref",
@@ -3638,6 +3639,18 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "wgpu 30.0.1",
+]
+
+[[package]]
+name = "i-slint-renderer-impeller"
+version = "1.19.0"
+dependencies = [
+ "cfg-if",
+ "glutin",
+ "i-slint-common",
+ "i-slint-core",
+ "i-slint-core-macros",
+ "raw-window-handle",
 ]
 
 [[package]]

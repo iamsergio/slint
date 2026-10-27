@@ -12,7 +12,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prefix = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
     for entry in
         walkdir::WalkDir::new(&prefix).follow_links(false).into_iter().filter_entry(|entry| {
-            !matches!(entry.file_name().to_str(), Some("target" | "dist" | "node_modules"))
+            !matches!(
+                entry.file_name().to_str(),
+                Some("target" | "dist" | "node_modules" | "3rdparty")
+            )
         })
     {
         let entry = entry?;

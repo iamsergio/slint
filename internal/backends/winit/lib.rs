@@ -106,6 +106,8 @@ mod renderer {
 
     #[cfg(enable_femtovg_renderer)]
     pub(crate) mod femtovg;
+    #[cfg(enable_impeller_renderer)]
+    pub(crate) mod impeller;
     #[cfg(enable_skia_renderer)]
     pub(crate) mod skia;
 
@@ -126,11 +128,14 @@ mod xdg_desktop_settings;
 pub(crate) mod wasm_input_helper;
 
 core::cfg_select! {
+    enable_skia_renderer => {
+        const DEFAULT_RENDERER_NAME: &str = "Skia";
+    }
     enable_femtovg_renderer => {
         const DEFAULT_RENDERER_NAME: &str = "FemtoVG";
     }
-    enable_skia_renderer => {
-        const DEFAULT_RENDERER_NAME: &str = "Skia";
+    enable_impeller_renderer => {
+        const DEFAULT_RENDERER_NAME: &str = "Impeller";
     }
     feature = "renderer-software" => {
         const DEFAULT_RENDERER_NAME: &str = "Software";
@@ -155,6 +160,9 @@ fn default_renderer_factory(
         }
         all(feature = "renderer-femtovg", supports_opengl) => {
             renderer::femtovg::GlutinFemtoVGRenderer::new_suspended(shared_backend_data)
+        }
+        enable_impeller_renderer => {
+            renderer::impeller::WinitImpellerRenderer::new_suspended(shared_backend_data)
         }
         feature = "renderer-software" => {
             renderer::sw::WinitSoftwareRenderer::new_suspended(shared_backend_data)
@@ -187,6 +195,8 @@ fn try_create_window_with_fallback_renderer(
             not(feature = "renderer-femtovg-wgpu")
         ))]
         renderer::femtovg::GlutinFemtoVGRenderer::new_suspended,
+        #[cfg(enable_impeller_renderer)]
+        renderer::impeller::WinitImpellerRenderer::new_suspended,
         #[cfg(feature = "renderer-software")]
         renderer::sw::WinitSoftwareRenderer::new_suspended,
         #[cfg(feature = "renderer-vello")]
@@ -1371,6 +1381,10 @@ fn create_renderer(
         #[cfg(all(enable_skia_renderer, not(target_os = "android")))]
         (Some("skia-software"), None) => {
             renderer::skia::WinitSkiaRenderer::new_software_suspended(shared_data)
+        }
+        #[cfg(enable_impeller_renderer)]
+        (Some("impeller"), _) => {
+            renderer::impeller::WinitImpellerRenderer::new_suspended(shared_data)
         }
         #[cfg(feature = "renderer-software")]
         (Some("sw"), None) | (Some("software"), None) => {
