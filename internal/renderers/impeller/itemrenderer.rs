@@ -1,47 +1,44 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use std::ffi::CString;
+use std::cell::RefCell;
 use std::pin::Pin;
+use std::rc::Rc;
 
 use i_slint_core::graphics::{Image, ImageInner, SharedImageBuffer, euclid};
 use i_slint_core::item_rendering::{
-    CachedRenderingData, ItemRenderer, PlainOrStyledText, RenderImage, RenderText,
+    CachedRenderingData, ItemRenderer, RenderImage, RenderText,
 };
-use i_slint_core::items::{
-    ImageFit, ImageRendering, ItemRc, Layer, Opacity, RenderingResult, TextHorizontalAlignment,
-    TextVerticalAlignment,
-};
+use i_slint_core::items::{ImageFit, ImageRendering, ItemRc, Layer, Opacity, RenderingResult};
 use i_slint_core::lengths::{
     LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
     PhysicalPx, ScaleFactor,
 };
+use i_slint_core::textlayout::sharedparley::{self, GlyphRenderer, fontique};
 use i_slint_core::{Brush, Color};
 
 use crate::ffi;
-
-fn font_weight_to_impeller(weight: Option<i32>) -> ffi::ImpellerFontWeight {
-    match weight.unwrap_or(400) {
-        w if w <= 150 => ffi::ImpellerFontWeight::W100,
-        w if w <= 250 => ffi::ImpellerFontWeight::W200,
-        w if w <= 350 => ffi::ImpellerFontWeight::W300,
-        w if w <= 450 => ffi::ImpellerFontWeight::W400,
-        w if w <= 550 => ffi::ImpellerFontWeight::W500,
-        w if w <= 650 => ffi::ImpellerFontWeight::W600,
-        w if w <= 750 => ffi::ImpellerFontWeight::W700,
-        w if w <= 850 => ffi::ImpellerFontWeight::W800,
-        _ => ffi::ImpellerFontWeight::W900,
-    }
-}
+use crate::glyphatlas::{AtlasGlyph, GlyphAtlas, GlyphKey, SUBPIXEL_BIN_COUNT};
+use crate::textures::{CachedTexture, ItemTextureCache, TextureCache, TextureCacheKey};
 
 pub struct ImpellerItemRenderer<'a> {
     builder: ffi::ImpellerDisplayListBuilder,
     scale_factor: ScaleFactor,
     window: &'a i_slint_core::api::Window,
-    typography_context: ffi::ImpellerTypographyContext,
     impeller_context: ffi::ImpellerContext,
+    glyph_atlas: &'a RefCell<GlyphAtlas>,
+    text_layout_cache: &'a sharedparley::TextLayoutCache,
+    texture_cache: &'a RefCell<TextureCache>,
+    item_texture_cache: &'a ItemTextureCache,
     current_opacity: f32,
     opacity_stack: Vec<f32>,
+    /// The sum of the translations applied so far, in physical pixels. Glyphs are snapped to the
+    /// pixel grid relative to it.
+    origin: ffi::ImpellerPoint,
+    origin_stack: Vec<ffi::ImpellerPoint>,
+    /// The current clip bounding box, in the current (logical) coordinate system.
+    clip: LogicalRect,
+    clip_stack: Vec<LogicalRect>,
 }
 
 impl<'a> ImpellerItemRenderer<'a> {
@@ -49,17 +46,31 @@ impl<'a> ImpellerItemRenderer<'a> {
         builder: ffi::ImpellerDisplayListBuilder,
         scale_factor: ScaleFactor,
         window: &'a i_slint_core::api::Window,
-        typography_context: ffi::ImpellerTypographyContext,
         impeller_context: ffi::ImpellerContext,
+        glyph_atlas: &'a RefCell<GlyphAtlas>,
+        text_layout_cache: &'a sharedparley::TextLayoutCache,
+        texture_cache: &'a RefCell<TextureCache>,
+        item_texture_cache: &'a ItemTextureCache,
     ) -> Self {
+        let window_size = window.size();
         Self {
             builder,
             scale_factor,
             window,
-            typography_context,
             impeller_context,
+            glyph_atlas,
+            text_layout_cache,
+            texture_cache,
+            item_texture_cache,
             current_opacity: 1.0,
             opacity_stack: Vec::new(),
+            origin: ffi::ImpellerPoint { x: 0.0, y: 0.0 },
+            origin_stack: Vec::new(),
+            clip: LogicalRect::from_size(
+                LogicalSize::new(window_size.width as f32, window_size.height as f32)
+                    / scale_factor.get(),
+            ),
+            clip_stack: Vec::new(),
         }
     }
 
@@ -316,6 +327,17 @@ impl<'a> ImpellerItemRenderer<'a> {
         }
     }
 
+    fn physical_radii(&self, radius: LogicalBorderRadius) -> ffi::ImpellerRoundingRadii {
+        let r = radius * self.scale_factor;
+        let p = |v: f32| ffi::ImpellerPoint { x: v, y: v };
+        ffi::ImpellerRoundingRadii {
+            top_left: p(r.top_left),
+            bottom_left: p(r.bottom_left),
+            top_right: p(r.top_right),
+            bottom_right: p(r.bottom_right),
+        }
+    }
+
     fn to_physical_rect(&self, rect: LogicalRect) -> ffi::ImpellerRect {
         let physical = rect * self.scale_factor;
         ffi::ImpellerRect {
@@ -326,7 +348,7 @@ impl<'a> ImpellerItemRenderer<'a> {
         }
     }
 
-    /// Create an Impeller texture from RGBA8 pixel data.
+    /// Create an Impeller texture from premultiplied RGBA8 pixel data.
     fn create_texture_from_rgba(
         &self,
         rgba_data: &[u8],
@@ -367,11 +389,29 @@ impl<'a> ImpellerItemRenderer<'a> {
         &self,
         image: &Image,
         target_size: Option<euclid::Size2D<u32, PhysicalPx>>,
-    ) -> Option<(ffi::ImpellerTexture, u32, u32)> {
+    ) -> Option<Rc<CachedTexture>> {
         let image_inner: &ImageInner = image.into();
         let buffer = image_inner.render_to_buffer(target_size)?;
         let (rgba_data, width, height) = match &buffer {
-            SharedImageBuffer::RGBA8(buf) => (buf.as_bytes(), buf.width(), buf.height()),
+            SharedImageBuffer::RGBA8(buf) => {
+                // Impeller blends premultiplied colours.
+                let w = buf.width();
+                let h = buf.height();
+                let premultiplied: Vec<u8> = buf
+                    .as_bytes()
+                    .chunks_exact(4)
+                    .flat_map(|px| {
+                        let a = px[3] as u32;
+                        let mul = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+                        [mul(px[0]), mul(px[1]), mul(px[2]), px[3]]
+                    })
+                    .collect();
+                let texture = self.create_texture_from_rgba(&premultiplied, w, h);
+                if texture.is_null() {
+                    return None;
+                }
+                return Some(Rc::new(CachedTexture { texture, width: w, height: h, target_size }));
+            }
             SharedImageBuffer::RGBA8Premultiplied(buf) => {
                 (buf.as_bytes(), buf.width(), buf.height())
             }
@@ -388,7 +428,7 @@ impl<'a> ImpellerItemRenderer<'a> {
                 if texture.is_null() {
                     return None;
                 }
-                return Some((texture, w, h));
+                return Some(Rc::new(CachedTexture { texture, width: w, height: h, target_size }));
             }
             _ => return None,
         };
@@ -399,7 +439,7 @@ impl<'a> ImpellerItemRenderer<'a> {
         if texture.is_null() {
             return None;
         }
-        Some((texture, width, height))
+        Some(Rc::new(CachedTexture { texture, width, height, target_size }))
     }
 }
 
@@ -562,7 +602,7 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
     fn draw_image(
         &mut self,
         image: Pin<&dyn RenderImage>,
-        _self_rc: &ItemRc,
+        self_rc: &ItemRc,
         size: LogicalSize,
         _cache: &CachedRenderingData,
     ) {
@@ -601,10 +641,31 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
             }
         };
 
-        let (texture, src_width, src_height) = match self.image_to_texture(&source, target_size) {
-            Some(t) => t,
-            None => return,
-        };
+        // Only SVGs depend on the target size.
+        let target_size = if ImageInner::is_svg(<&ImageInner>::from(&source)) { target_size } else { None };
+
+        // The item cache is invalidated when the source changes. The size is not a property, so
+        // a texture rasterised for another size is dropped by hand.
+        let cached = self.item_texture_cache.get_or_update_cache_entry_unless(
+            self_rc,
+            || {
+                let source = image.source();
+                let image_inner: &ImageInner = (&source).into();
+                match TextureCacheKey::new(image_inner, target_size) {
+                    Some(key) => {
+                        let cache = self.texture_cache;
+                        cache.borrow_mut().lookup_or_create(key, || {
+                            self.image_to_texture(&source, target_size)
+                        })
+                    }
+                    None => self.image_to_texture(&source, target_size),
+                }
+            },
+            |cached| cached.as_ref().is_some_and(|c| c.target_size != target_size),
+        );
+        let Some(cached) = cached else { return };
+        let texture = cached.texture;
+        let (src_width, src_height) = (cached.width, cached.height);
 
         let src_w = src_width as f32;
         let src_h = src_height as f32;
@@ -708,7 +769,6 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
             if !paint.is_null() {
                 ffi::ImpellerPaintRelease(paint);
             }
-            ffi::ImpellerTextureRelease(texture);
         }
     }
 
@@ -719,35 +779,139 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         size: LogicalSize,
         _cache: &CachedRenderingData,
     ) {
-        if self.typography_context.is_null() {
-            return;
-        }
+        sharedparley::draw_text(self, text, Some(self_rc), size, Some(self.text_layout_cache));
+    }
 
-        let plain_text = text.text();
-        let string: std::borrow::Cow<'_, str> = match &plain_text {
-            PlainOrStyledText::Plain(s) => s.as_str().into(),
-            PlainOrStyledText::Styled(styled) => i_slint_core::styled_text::get_raw_text(styled),
+    fn draw_text_input(
+        &mut self,
+        text_input: Pin<&i_slint_core::items::TextInput>,
+        self_rc: &ItemRc,
+        size: LogicalSize,
+    ) {
+        sharedparley::draw_text_input(self, text_input, self_rc, size, self.text_layout_cache);
+    }
+
+    fn draw_path(
+        &mut self,
+        path: Pin<&i_slint_core::items::Path>,
+        item_rc: &ItemRc,
+        size: LogicalSize,
+    ) {
+        use i_slint_core::items::{FillRule, LineCap, LineJoin};
+
+        let Some((offset, events)) = path.fitted_path_events(item_rc) else { return };
+        let scale = self.scale_factor.get();
+        let pt = |p: lyon_path::math::Point| ffi::ImpellerPoint { x: p.x * scale, y: p.y * scale };
+
+        unsafe {
+            let builder = ffi::ImpellerPathBuilderNew();
+            if builder.is_null() {
+                return;
+            }
+            for event in events.iter() {
+                match event {
+                    lyon_path::Event::Begin { at } => {
+                        ffi::ImpellerPathBuilderMoveTo(builder, &pt(at));
+                    }
+                    lyon_path::Event::Line { from: _, to } => {
+                        ffi::ImpellerPathBuilderLineTo(builder, &pt(to));
+                    }
+                    lyon_path::Event::Quadratic { from: _, ctrl, to } => {
+                        ffi::ImpellerPathBuilderQuadraticCurveTo(builder, &pt(ctrl), &pt(to));
+                    }
+                    lyon_path::Event::Cubic { from: _, ctrl1, ctrl2, to } => {
+                        ffi::ImpellerPathBuilderCubicCurveTo(
+                            builder,
+                            &pt(ctrl1),
+                            &pt(ctrl2),
+                            &pt(to),
+                        );
+                    }
+                    lyon_path::Event::End { last: _, first: _, close } => {
+                        if close {
+                            ffi::ImpellerPathBuilderClose(builder);
+                        }
+                    }
+                }
+            }
+            let fill_type = match path.fill_rule() {
+                FillRule::Evenodd => ffi::ImpellerFillType::Odd,
+                _ => ffi::ImpellerFillType::NonZero,
+            };
+            let impeller_path = ffi::ImpellerPathBuilderTakePathNew(builder, fill_type);
+            ffi::ImpellerPathBuilderRelease(builder);
+            if impeller_path.is_null() {
+                return;
+            }
+
+            let physical_offset = offset * self.scale_factor;
+            let geometry = self.to_physical_rect(LogicalRect::from(size));
+            let brush_rect = ffi::ImpellerRect { x: 0.0, y: 0.0, ..geometry };
+
+            ffi::ImpellerDisplayListBuilderSave(self.builder);
+            ffi::ImpellerDisplayListBuilderTranslate(
+                self.builder,
+                physical_offset.x,
+                physical_offset.y,
+            );
+
+            if let Some((paint, cs)) = self.setup_paint_for_brush(&path.fill(), &brush_rect) {
+                ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Fill);
+                ffi::ImpellerDisplayListBuilderDrawPath(self.builder, impeller_path, paint);
+                Self::release_paint(paint, cs);
+            }
+            let stroke_width = (path.stroke_width() * self.scale_factor).get();
+            if stroke_width > 0.0 {
+                if let Some((paint, cs)) = self.setup_paint_for_brush(&path.stroke(), &brush_rect)
+                {
+                    ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Stroke);
+                    ffi::ImpellerPaintSetStrokeWidth(paint, stroke_width);
+                    ffi::ImpellerPaintSetStrokeCap(
+                        paint,
+                        match path.stroke_line_cap() {
+                            LineCap::Round => ffi::ImpellerStrokeCap::Round,
+                            LineCap::Square => ffi::ImpellerStrokeCap::Square,
+                            _ => ffi::ImpellerStrokeCap::Butt,
+                        },
+                    );
+                    ffi::ImpellerPaintSetStrokeJoin(
+                        paint,
+                        match path.stroke_line_join() {
+                            LineJoin::Round => ffi::ImpellerStrokeJoin::Round,
+                            LineJoin::Bevel => ffi::ImpellerStrokeJoin::Bevel,
+                            _ => ffi::ImpellerStrokeJoin::Miter,
+                        },
+                    );
+                    ffi::ImpellerPaintSetStrokeMiter(paint, path.stroke_miter_limit());
+                    // Dash arrays are not supported: the C API has no path effects.
+                    ffi::ImpellerDisplayListBuilderDrawPath(self.builder, impeller_path, paint);
+                    Self::release_paint(paint, cs);
+                }
+            }
+
+            ffi::ImpellerDisplayListBuilderRestore(self.builder);
+            ffi::ImpellerPathRelease(impeller_path);
+        }
+    }
+
+    fn draw_box_shadow(
+        &mut self,
+        box_shadow: Pin<&i_slint_core::items::BoxShadow>,
+        item_rc: &ItemRc,
+        _size: LogicalSize,
+    ) {
+        use i_slint_core::graphics::boxshadow::BoxShadowOptions;
+        let Some(opts) = BoxShadowOptions::new(item_rc, box_shadow, self.scale_factor) else {
+            return;
         };
-        if string.is_empty() {
-            return;
-        }
-
-        let Some(mut color) = self.brush_to_color(&text.color()) else { return };
+        let mut color = self.color_to_impeller(&opts.color);
         color.alpha *= self.current_opacity;
-        let (h_align, v_align) = text.alignment();
-        let font_request = text.font_request(self_rc);
-        let sf = self.scale_factor.get();
-
-        let font_size = font_request.pixel_size.map(|s| s.get() * sf).unwrap_or(16.0 * sf);
-
-        // Resolve the font family name. When no family is specified, query fontique
-        // for the default sans-serif font (matching what Skia/FemtoVG do).
-        let resolved_family: Option<String> = if font_request.family.is_some() {
-            font_request.family.as_ref().map(|f| f.to_string())
-        } else {
-            let mut font_context = self.window().context().font_context().borrow_mut();
-            let family = font_context.query_font(&font_request).map(|f| f.font.family.0);
-            family.and_then(|id| font_context.collection.family_name(id).map(|s| s.to_string()))
+        let sigma = opts.blur_sigma();
+        let phys_radii = |r: i_slint_core::lengths::PhysicalBorderRadius| ffi::ImpellerRoundingRadii {
+            top_left: ffi::ImpellerPoint { x: r.top_left, y: r.top_left },
+            bottom_left: ffi::ImpellerPoint { x: r.bottom_left, y: r.bottom_left },
+            top_right: ffi::ImpellerPoint { x: r.top_right, y: r.top_right },
+            bottom_right: ffi::ImpellerPoint { x: r.bottom_right, y: r.bottom_right },
         };
 
         unsafe {
@@ -755,111 +919,81 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
             if paint.is_null() {
                 return;
             }
-            ffi::ImpellerPaintSetColor(paint, &color as *const _);
-
-            let style = ffi::ImpellerParagraphStyleNew();
-            if style.is_null() {
-                ffi::ImpellerPaintRelease(paint);
-                return;
+            ffi::ImpellerPaintSetColor(paint, &color);
+            ffi::ImpellerPaintSetDrawStyle(paint, ffi::ImpellerDrawStyle::Fill);
+            let mask = if sigma > 0.0 {
+                ffi::ImpellerMaskFilterCreateBlurNew(ffi::ImpellerBlurStyle::Normal, sigma)
+            } else {
+                std::ptr::null_mut()
+            };
+            if !mask.is_null() {
+                ffi::ImpellerPaintSetMaskFilter(paint, mask);
             }
 
-            ffi::ImpellerParagraphStyleSetForeground(style, paint);
-            ffi::ImpellerParagraphStyleSetFontSize(style, font_size);
-
-            if let Some(ref family) = resolved_family {
-                if !family.is_empty() {
-                    if let Ok(c_family) = CString::new(family.as_str()) {
-                        ffi::ImpellerParagraphStyleSetFontFamily(style, c_family.as_ptr());
+            if opts.inset {
+                let (w, h) = (opts.width.get(), opts.height.get());
+                let spread = opts.spread.get();
+                // Clip to the item, then fill everything around the (offset, spread) hole.
+                ffi::ImpellerDisplayListBuilderSave(self.builder);
+                let item_rect = ffi::ImpellerRect { x: 0.0, y: 0.0, width: w, height: h };
+                let radii = phys_radii(opts.radius);
+                ffi::ImpellerDisplayListBuilderClipRoundedRect(
+                    self.builder,
+                    &item_rect,
+                    &radii,
+                    ffi::ImpellerClipOperation::Intersect,
+                );
+                let big = opts.blur.get() * 3.0 + 1.0;
+                let outer = ffi::ImpellerRect {
+                    x: -big - w,
+                    y: -big - h,
+                    width: w * 3.0 + 2.0 * big,
+                    height: h * 3.0 + 2.0 * big,
+                };
+                let hole = ffi::ImpellerRect {
+                    x: opts.offset_x_inset + spread,
+                    y: opts.offset_y_inset + spread,
+                    width: (w - 2.0 * spread).max(0.0),
+                    height: (h - 2.0 * spread).max(0.0),
+                };
+                let hole_radii = phys_radii(opts.inner_radius());
+                let pb = ffi::ImpellerPathBuilderNew();
+                if !pb.is_null() {
+                    ffi::ImpellerPathBuilderAddRect(pb, &outer);
+                    ffi::ImpellerPathBuilderAddRoundedRect(pb, &hole, &hole_radii);
+                    let path = ffi::ImpellerPathBuilderTakePathNew(pb, ffi::ImpellerFillType::Odd);
+                    ffi::ImpellerPathBuilderRelease(pb);
+                    if !path.is_null() {
+                        ffi::ImpellerDisplayListBuilderDrawPath(self.builder, path, paint);
+                        ffi::ImpellerPathRelease(path);
                     }
                 }
+                ffi::ImpellerDisplayListBuilderRestore(self.builder);
+            } else {
+                let shape = opts.shape_size();
+                if !shape.is_empty() {
+                    let off_x = (box_shadow.offset_x() * self.scale_factor).get();
+                    let off_y = (box_shadow.offset_y() * self.scale_factor).get();
+                    let rect = ffi::ImpellerRect {
+                        x: off_x - opts.spread.get(),
+                        y: off_y - opts.spread.get(),
+                        width: shape.width,
+                        height: shape.height,
+                    };
+                    let radii = phys_radii(opts.outer_radius());
+                    ffi::ImpellerDisplayListBuilderDrawRoundedRect(
+                        self.builder,
+                        &rect,
+                        &radii,
+                        paint,
+                    );
+                }
             }
-
-            ffi::ImpellerParagraphStyleSetFontWeight(
-                style,
-                font_weight_to_impeller(font_request.weight),
-            );
-
-            if font_request.italic {
-                ffi::ImpellerParagraphStyleSetFontStyle(style, ffi::ImpellerFontStyle::Italic);
+            if !mask.is_null() {
+                ffi::ImpellerMaskFilterRelease(mask);
             }
-
-            let imp_align = match h_align {
-                TextHorizontalAlignment::Center => ffi::ImpellerTextAlignment::Center,
-                TextHorizontalAlignment::Right => ffi::ImpellerTextAlignment::Right,
-                _ => ffi::ImpellerTextAlignment::Left,
-            };
-            ffi::ImpellerParagraphStyleSetTextAlignment(style, imp_align);
-
-            let para_builder = ffi::ImpellerParagraphBuilderNew(self.typography_context);
-            if para_builder.is_null() {
-                ffi::ImpellerParagraphStyleRelease(style);
-                ffi::ImpellerPaintRelease(paint);
-                return;
-            }
-
-            ffi::ImpellerParagraphBuilderPushStyle(para_builder, style);
-
-            let text_bytes = string.as_bytes();
-            ffi::ImpellerParagraphBuilderAddText(
-                para_builder,
-                text_bytes.as_ptr(),
-                text_bytes.len() as u32,
-            );
-
-            ffi::ImpellerParagraphBuilderPopStyle(para_builder);
-
-            let layout_width = size.width * sf;
-            let paragraph =
-                ffi::ImpellerParagraphBuilderBuildParagraphNew(para_builder, layout_width);
-
-            if !paragraph.is_null() {
-                let para_height = ffi::ImpellerParagraphGetHeight(paragraph);
-                let physical_height = size.height * sf;
-
-                let y_offset = match v_align {
-                    TextVerticalAlignment::Center => (physical_height - para_height) / 2.0,
-                    TextVerticalAlignment::Bottom => physical_height - para_height,
-                    _ => 0.0,
-                };
-                let y_offset = y_offset.max(0.0);
-
-                let point = ffi::ImpellerPoint { x: 0.0, y: y_offset };
-                ffi::ImpellerDisplayListBuilderDrawParagraph(
-                    self.builder,
-                    paragraph,
-                    &point as *const _,
-                );
-                ffi::ImpellerParagraphRelease(paragraph);
-            }
-
-            ffi::ImpellerParagraphBuilderRelease(para_builder);
-            ffi::ImpellerParagraphStyleRelease(style);
             ffi::ImpellerPaintRelease(paint);
         }
-    }
-
-    fn draw_text_input(
-        &mut self,
-        _text_input: Pin<&i_slint_core::items::TextInput>,
-        _self_rc: &ItemRc,
-        _size: LogicalSize,
-    ) {
-    }
-
-    fn draw_path(
-        &mut self,
-        _path: Pin<&i_slint_core::items::Path>,
-        _self_rc: &ItemRc,
-        _size: LogicalSize,
-    ) {
-    }
-
-    fn draw_box_shadow(
-        &mut self,
-        _box_shadow: Pin<&i_slint_core::items::BoxShadow>,
-        _self_rc: &ItemRc,
-        _size: LogicalSize,
-    ) {
     }
 
     fn visit_opacity(
@@ -928,28 +1062,46 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
         RenderingResult::ContinueRenderingChildren
     }
 
-    fn combine_clip(&mut self, rect: LogicalRect, _radius: LogicalBorderRadius) -> bool {
+    fn combine_clip(&mut self, rect: LogicalRect, radius: LogicalBorderRadius) -> bool {
         let impeller_rect = self.to_physical_rect(rect);
         unsafe {
-            ffi::ImpellerDisplayListBuilderClipRect(
-                self.builder,
-                &impeller_rect as *const _,
-                ffi::ImpellerClipOperation::Intersect,
-            );
+            if radius.is_zero() {
+                ffi::ImpellerDisplayListBuilderClipRect(
+                    self.builder,
+                    &impeller_rect as *const _,
+                    ffi::ImpellerClipOperation::Intersect,
+                );
+            } else {
+                let radii = self.physical_radii(radius);
+                ffi::ImpellerDisplayListBuilderClipRoundedRect(
+                    self.builder,
+                    &impeller_rect as *const _,
+                    &radii as *const _,
+                    ffi::ImpellerClipOperation::Intersect,
+                );
+            }
         }
-        true
+        match self.clip.intersection(&rect) {
+            Some(r) => {
+                self.clip = r;
+                true
+            }
+            None => {
+                self.clip = LogicalRect::default();
+                false
+            }
+        }
     }
 
     fn get_current_clip(&self) -> LogicalRect {
-        let window_size = self.window.size();
-        LogicalRect::new(
-            LogicalPoint::default(),
-            LogicalSize::new(window_size.width as f32, window_size.height as f32),
-        )
+        self.clip
     }
 
     fn translate(&mut self, distance: LogicalVector) {
+        self.clip.origin -= distance;
         let physical_distance = distance * self.scale_factor;
+        self.origin.x += physical_distance.x;
+        self.origin.y += physical_distance.y;
         unsafe {
             ffi::ImpellerDisplayListBuilderTranslate(
                 self.builder,
@@ -960,12 +1112,42 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
     }
 
     fn rotate(&mut self, angle_in_degrees: f32) {
+        // The clip in the rotated system is the bounding box of the old one rotated back.
+        let (s, c) = (-angle_in_degrees).to_radians().sin_cos();
+        let r = self.clip;
+        let corners = [
+            r.origin,
+            r.origin + LogicalVector::new(r.size.width, 0.0),
+            r.origin + LogicalVector::new(0.0, r.size.height),
+            r.origin + LogicalVector::new(r.size.width, r.size.height),
+        ];
+        let (mut min_x, mut min_y, mut max_x, mut max_y) =
+            (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in corners {
+            let (x, y) = (p.x * c - p.y * s, p.x * s + p.y * c);
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        self.clip = LogicalRect::new(
+            LogicalPoint::new(min_x, min_y),
+            LogicalSize::new(max_x - min_x, max_y - min_y),
+        );
         unsafe {
             ffi::ImpellerDisplayListBuilderRotate(self.builder, angle_in_degrees);
         }
     }
 
     fn scale(&mut self, x_factor: f32, y_factor: f32) {
+        if x_factor != 0.0 && y_factor != 0.0 {
+            let (x0, x1) = (self.clip.min_x() / x_factor, self.clip.max_x() / x_factor);
+            let (y0, y1) = (self.clip.min_y() / y_factor, self.clip.max_y() / y_factor);
+            self.clip = LogicalRect::new(
+                LogicalPoint::new(x0.min(x1), y0.min(y1)),
+                LogicalSize::new((x1 - x0).abs(), (y1 - y0).abs()),
+            );
+        }
         unsafe {
             ffi::ImpellerDisplayListBuilderScale(self.builder, x_factor, y_factor);
         }
@@ -977,6 +1159,8 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
 
     fn save_state(&mut self) {
         self.opacity_stack.push(self.current_opacity);
+        self.origin_stack.push(self.origin);
+        self.clip_stack.push(self.clip);
         unsafe {
             ffi::ImpellerDisplayListBuilderSave(self.builder);
         }
@@ -985,6 +1169,12 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
     fn restore_state(&mut self) {
         if let Some(opacity) = self.opacity_stack.pop() {
             self.current_opacity = opacity;
+        }
+        if let Some(clip) = self.clip_stack.pop() {
+            self.clip = clip;
+        }
+        if let Some(origin) = self.origin_stack.pop() {
+            self.origin = origin;
         }
         unsafe {
             ffi::ImpellerDisplayListBuilderRestore(self.builder);
@@ -1003,71 +1193,21 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
     }
 
     fn draw_string(&mut self, string: &str, color: Color) {
-        if self.typography_context.is_null() || string.is_empty() {
-            return;
-        }
-
-        let sf = self.scale_factor.get();
-        let mut impeller_color = self.color_to_impeller(&color);
-        impeller_color.alpha *= self.current_opacity;
-
-        unsafe {
-            let paint = ffi::ImpellerPaintNew();
-            if paint.is_null() {
-                return;
-            }
-            ffi::ImpellerPaintSetColor(paint, &impeller_color as *const _);
-
-            let style = ffi::ImpellerParagraphStyleNew();
-            if style.is_null() {
-                ffi::ImpellerPaintRelease(paint);
-                return;
-            }
-
-            ffi::ImpellerParagraphStyleSetForeground(style, paint);
-            ffi::ImpellerParagraphStyleSetFontSize(style, 16.0 * sf);
-
-            let para_builder = ffi::ImpellerParagraphBuilderNew(self.typography_context);
-            if para_builder.is_null() {
-                ffi::ImpellerParagraphStyleRelease(style);
-                ffi::ImpellerPaintRelease(paint);
-                return;
-            }
-
-            ffi::ImpellerParagraphBuilderPushStyle(para_builder, style);
-
-            let text_bytes = string.as_bytes();
-            ffi::ImpellerParagraphBuilderAddText(
-                para_builder,
-                text_bytes.as_ptr(),
-                text_bytes.len() as u32,
-            );
-
-            ffi::ImpellerParagraphBuilderPopStyle(para_builder);
-
-            let paragraph = ffi::ImpellerParagraphBuilderBuildParagraphNew(para_builder, f32::MAX);
-
-            if !paragraph.is_null() {
-                let point = ffi::ImpellerPoint { x: 0.0, y: 0.0 };
-                ffi::ImpellerDisplayListBuilderDrawParagraph(
-                    self.builder,
-                    paragraph,
-                    &point as *const _,
-                );
-                ffi::ImpellerParagraphRelease(paragraph);
-            }
-
-            ffi::ImpellerParagraphBuilderRelease(para_builder);
-            ffi::ImpellerParagraphStyleRelease(style);
-            ffi::ImpellerPaintRelease(paint);
-        }
+        sharedparley::draw_text(
+            self,
+            std::pin::pin!((i_slint_core::SharedString::from(string), Brush::from(color))),
+            None,
+            LogicalSize::from_lengths(
+                LogicalLength::new(self.window.size().width as f32),
+                LogicalLength::new(self.window.size().height as f32),
+            ) / self.scale_factor.get(),
+            None,
+        );
     }
 
     fn draw_image_direct(&mut self, image: i_slint_core::graphics::Image) {
-        let (texture, _width, _height) = match self.image_to_texture(&image, None) {
-            Some(t) => t,
-            None => return,
-        };
+        let Some(cached) = self.image_to_texture(&image, None) else { return };
+        let texture = cached.texture;
 
         let point = ffi::ImpellerPoint { x: 0.0, y: 0.0 };
 
@@ -1089,5 +1229,220 @@ impl ItemRenderer for ImpellerItemRenderer<'_> {
 
     fn as_any(&mut self) -> Option<&mut dyn core::any::Any> {
         None
+    }
+}
+
+impl GlyphRenderer for ImpellerItemRenderer<'_> {
+    type PlatformBrush = Color;
+
+    fn platform_text_fill_brush(&mut self, brush: Brush, _size: LogicalSize) -> Option<Color> {
+        (!brush.is_transparent()).then(|| brush.color())
+    }
+
+    fn platform_brush_for_color(&mut self, color: &Color) -> Option<Color> {
+        (color.alpha() != 0).then_some(*color)
+    }
+
+    fn platform_text_stroke_brush(
+        &mut self,
+        _brush: Brush,
+        _physical_stroke_width: f32,
+        _size: LogicalSize,
+    ) -> Option<Color> {
+        // Stroked text isn't supported yet.
+        None
+    }
+
+    fn draw_glyph_run(
+        &mut self,
+        font: &sharedparley::parley::FontData,
+        font_size: sharedparley::PhysicalLength,
+        normalized_coords: &[i16],
+        synthesis: &fontique::Synthesis,
+        brush: Color,
+        y_offset: sharedparley::PhysicalLength,
+        glyphs_it: &mut dyn Iterator<Item = sharedparley::parley::layout::Glyph>,
+    ) {
+        let font_size = font_size.get();
+        let blob_id = font.data.id();
+
+        // Position every glyph on the pixel grid, with a quantised subpixel x offset.
+        let positioned: Vec<(GlyphKey, f32, f32)> = glyphs_it
+            .map(|g| {
+                let abs_x = self.origin.x + g.x;
+                let mut ix = abs_x.floor();
+                let mut bin = ((abs_x - ix) * SUBPIXEL_BIN_COUNT as f32).round() as u8;
+                if bin >= SUBPIXEL_BIN_COUNT {
+                    ix += 1.0;
+                    bin = 0;
+                }
+                let iy = (self.origin.y + g.y + y_offset.get()).round();
+                let key = GlyphKey {
+                    font_blob_id: blob_id,
+                    font_index: font.index,
+                    glyph_id: g.id,
+                    size_bits: font_size.to_bits(),
+                    coords: normalized_coords.to_vec(),
+                    subpixel_bin: bin,
+                    skew_bits: synthesis.skew().map(f32::to_bits),
+                    embolden: synthesis.embolden(),
+                };
+                (key, ix - self.origin.x, iy - self.origin.y)
+            })
+            .collect();
+
+        let mut atlas = self.glyph_atlas.borrow_mut();
+
+        if positioned.iter().any(|(key, ..)| atlas.get(key).is_none()) {
+            if let Some(font_ref) = atlas.swash_font_ref(font.data.data(), blob_id, font.index) {
+                let mut scale_context = self.window().context().swash_scale_context().borrow_mut();
+                let mut scaler = scale_context
+                    .builder(font_ref)
+                    .size(font_size)
+                    .normalized_coords(normalized_coords)
+                    .build();
+                for (key, ..) in &positioned {
+                    atlas.insert(key.clone(), &mut scaler, font_size, synthesis);
+                }
+            }
+        }
+
+        let texture = atlas.texture(self.impeller_context);
+        if texture.is_null() {
+            return;
+        }
+
+        let text_color = self.color_to_impeller(&brush);
+        let mut mask_paint: Option<(ffi::ImpellerPaint, ffi::ImpellerColorFilter)> = None;
+        let mut color_paint: Option<ffi::ImpellerPaint> = None;
+
+        for (key, x, y) in &positioned {
+            let Some(Some(AtlasGlyph { x: sx, y: sy, width, height, left, top, is_color })) =
+                atlas.get(key)
+            else {
+                continue;
+            };
+
+            let paint = if is_color {
+                *color_paint.get_or_insert_with(|| unsafe {
+                    let paint = ffi::ImpellerPaintNew();
+                    let color = ffi::ImpellerColor {
+                        red: 1.0,
+                        green: 1.0,
+                        blue: 1.0,
+                        alpha: text_color.alpha * self.current_opacity,
+                        color_space: ffi::ImpellerColorSpace::SRGB,
+                    };
+                    ffi::ImpellerPaintSetColor(paint, &color as *const _);
+                    paint
+                })
+            } else {
+                mask_paint
+                    .get_or_insert_with(|| unsafe {
+                        let paint = ffi::ImpellerPaintNew();
+                        // The opacity goes on the paint, the text colour, with its own alpha, in
+                        // the filter.
+                        let opacity = ffi::ImpellerColor {
+                            red: 1.0,
+                            green: 1.0,
+                            blue: 1.0,
+                            alpha: self.current_opacity,
+                            color_space: ffi::ImpellerColorSpace::SRGB,
+                        };
+                        ffi::ImpellerPaintSetColor(paint, &opacity as *const _);
+                        let filter = ffi::ImpellerColorFilterCreateBlendNew(
+                            &text_color as *const _,
+                            ffi::ImpellerBlendMode::SourceIn,
+                        );
+                        ffi::ImpellerPaintSetColorFilter(paint, filter);
+                        (paint, filter)
+                    })
+                    .0
+            };
+
+            let src_rect = ffi::ImpellerRect {
+                x: sx as f32,
+                y: sy as f32,
+                width: width as f32,
+                height: height as f32,
+            };
+            let dst_rect = ffi::ImpellerRect {
+                x: x + left as f32,
+                y: y + top as f32,
+                width: width as f32,
+                height: height as f32,
+            };
+            unsafe {
+                ffi::ImpellerDisplayListBuilderDrawTextureRect(
+                    self.builder,
+                    texture,
+                    &src_rect as *const _,
+                    &dst_rect as *const _,
+                    ffi::ImpellerTextureSampling::Linear,
+                    paint,
+                );
+            }
+        }
+
+        unsafe {
+            if let Some((paint, filter)) = mask_paint {
+                ffi::ImpellerColorFilterRelease(filter);
+                ffi::ImpellerPaintRelease(paint);
+            }
+            if let Some(paint) = color_paint {
+                ffi::ImpellerPaintRelease(paint);
+            }
+        }
+    }
+
+    fn fill_rectangle(
+        &mut self,
+        physical_rect: sharedparley::PhysicalRect,
+        brush: Color,
+        radius: sharedparley::PhysicalLength,
+        border: Option<sharedparley::RectangleBorder<Color>>,
+    ) {
+        let rect = ffi::ImpellerRect {
+            x: physical_rect.min_x(),
+            y: physical_rect.min_y(),
+            width: physical_rect.width(),
+            height: physical_rect.height(),
+        };
+        let radius = radius.get();
+        let radii = ffi::ImpellerRoundingRadii {
+            top_left: ffi::ImpellerPoint { x: radius, y: radius },
+            bottom_left: ffi::ImpellerPoint { x: radius, y: radius },
+            top_right: ffi::ImpellerPoint { x: radius, y: radius },
+            bottom_right: ffi::ImpellerPoint { x: radius, y: radius },
+        };
+
+        let draw = |color: &Color, style: ffi::ImpellerDrawStyle, stroke_width: f32| unsafe {
+            let mut color = self.color_to_impeller(color);
+            color.alpha *= self.current_opacity;
+            let paint = ffi::ImpellerPaintNew();
+            ffi::ImpellerPaintSetColor(paint, &color as *const _);
+            ffi::ImpellerPaintSetDrawStyle(paint, style);
+            if style == ffi::ImpellerDrawStyle::Stroke {
+                ffi::ImpellerPaintSetStrokeWidth(paint, stroke_width);
+            }
+            if radius <= 0.0 {
+                ffi::ImpellerDisplayListBuilderDrawRect(self.builder, &rect as *const _, paint);
+            } else {
+                ffi::ImpellerDisplayListBuilderDrawRoundedRect(
+                    self.builder,
+                    &rect as *const _,
+                    &radii as *const _,
+                    paint,
+                );
+            }
+            ffi::ImpellerPaintRelease(paint);
+        };
+
+        draw(&brush, ffi::ImpellerDrawStyle::Fill, 0.0);
+        if let Some(sharedparley::RectangleBorder { brush, width }) = border
+            && width.get() > 0.0
+        {
+            draw(&brush, ffi::ImpellerDrawStyle::Stroke, width.get());
+        }
     }
 }

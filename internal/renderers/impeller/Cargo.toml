@@ -20,10 +20,12 @@ path = "lib.rs"
 default = []
 
 [dependencies]
-i-slint-core = { workspace = true, features = ["default", "shared-parley"] }
+i-slint-core = { workspace = true, features = ["default", "shared-parley", "shared-swash"] }
 i-slint-core-macros = { workspace = true, features = ["default"] }
 i-slint-common = { workspace = true, features = ["default"] }
 
+lyon_path = { workspace = true }
+swash = { workspace = true, features = ["scale", "render", "std"] }
 raw-window-handle = { version = "0.6", features = ["std"] }
 cfg-if = "1"
 

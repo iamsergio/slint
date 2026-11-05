@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Slint renderer backed by Flutter's [Impeller](https://github.com/flutter/engine/tree/main/impeller) graphics engine, linked via its C API (`libimpeller.so`). Currently supports rectangles, rounded rects, borders, text rendering, transforms, images (all ImageFit modes, SVG via resvg rasterization), and gradients (linear, radial, conic/sweep). Opacity compositing, paths, box shadows, and text input are not yet implemented.
+A Slint renderer backed by Flutter's [Impeller](https://github.com/flutter/engine/tree/main/impeller) graphics engine, linked via its C API (`libimpeller.so`). Currently supports rectangles, rounded rects, borders, text (sharedparley layout, swash glyph atlas), text input, transforms, images (all ImageFit modes, SVG via resvg rasterization), gradients (linear, radial, conic/sweep), opacity compositing, clip tracking (rounded clips), paths and box shadows.
 
 ## Build & Run
 
@@ -29,7 +29,8 @@ internal/renderers/impeller/
   build.rs            # links libimpeller.so via IMPELLER_SDK_PATH
   lib.rs              # ImpellerRenderer + RendererSealed impl
   itemrenderer.rs     # ImpellerItemRenderer (ItemRenderer impl)
-  ffi.rs              # manual FFI bindings (~50 functions)
+  glyphatlas.rs       # swash-rasterized glyph atlas (R8 textures, subpixel bins)
+  ffi.rs              # manual FFI bindings (~80 functions)
   tests.rs            # struct size / constant sanity checks
 
 internal/backends/winit/
@@ -79,7 +80,6 @@ Top-level renderer holding all GPU state:
 | Field | Type | Purpose |
 |---|---|---|
 | `impeller_context` | `RefCell<Option<*mut c_void>>` | Impeller GPU context |
-| `typography_context` | `RefCell<Option<*mut c_void>>` | Font registration / text shaping |
 | `glutin_context` | `RefCell<Option<PossiblyCurrentContext>>` | OpenGL context |
 | `glutin_surface` | `RefCell<Option<Surface<WindowSurface>>>` | EGL surface |
 | `size` | `Cell<PhysicalWindowSize>` | Current window size |
@@ -87,7 +87,7 @@ Top-level renderer holding all GPU state:
 
 **Lifecycle:**
 - `new()` -> all fields None
-- `set_window_handle(window, display, size)` -> initializes glutin + Impeller context + registers fonts
+- `set_window_handle(window, display, size)` -> initializes glutin + Impeller context
 - `render()` -> one frame (see pipeline above)
 - `resize(size)` -> updates glutin surface size
 - `suspend()` -> releases all GPU resources
@@ -99,54 +99,41 @@ Top-level renderer holding all GPU state:
 Per-frame drawing visitor, wraps an `ImpellerDisplayListBuilder`.
 
 **Implemented:**
-- `draw_rectangle` - solid color fill
-- `draw_border_rectangle` - fill + stroke, supports rounded corners via `ImpellerRoundingRadii`
-- `draw_text` - full paragraph layout via Impeller typography (font family, size, weight, style, alignment)
-- `draw_string` - debug text at 16px
-- `draw_image` — texture from `image_to_texture()`/`create_texture_from_rgba()`, ImageFit (Fill, Contain, Preserve, Cover), ImageRendering (Pixelated/Linear) via `ImpellerDisplayListBuilderDrawTextureRect`
-- `draw_image_direct` — texture at origin via `ImpellerDisplayListBuilderDrawTexture`
-- `setup_paint_for_brush` — SolidColor, LinearGradient (angle-based), RadialGradient, ConicGradient (as sweep)
-- `combine_clip` - `ClipRect` with `Intersect`
-- `translate`, `rotate`, `scale` - builder transform calls
-- `save_state` / `restore_state` - builder save/restore stack
-- `visit_opacity` — `SaveLayer` with accumulated alpha paint, or inline `apply_opacity` when no layer needed
-- `apply_opacity` — multiplies `current_opacity` into all subsequent draw calls
+- `draw_rectangle` - solid/gradient fill
+- `draw_border_rectangle` - fill + stroke, rounded corners via `ImpellerRoundingRadii`
+- `draw_text` / `draw_text_input` / `draw_string` - layout by `sharedparley` (the `GlyphRenderer` trait is implemented on the item renderer); glyphs are rasterized with swash into `GlyphAtlas` (`glyphatlas.rs`) and drawn as textured rects, snapped to the pixel grid relative to the accumulated translation `origin`; colour glyphs are supported, fills/stroke by solid colour
+- `draw_image` - texture from `image_to_texture()`, cached as in FemtoVG: a per-item `ItemCache` (invalidated with the item's properties, released in `free_graphics_resources`) over a shared `TextureCache` keyed by `ImageCacheKey` and the SVG target size (`textures.rs`), drained after each frame and cleared in `suspend()`; ImageFit (Fill, Contain, Preserve, Cover), ImageRendering via `DrawTextureRect`
+- `draw_image_direct` - texture at origin
+- `setup_paint_for_brush` - SolidColor, LinearGradient, RadialGradient, ConicGradient (sweep)
+- `combine_clip` - `ClipRect`, or `ClipRoundedRect` when the radius is non-zero (the border width is already folded in by core's `visit_clip` via `clip_content_box`)
+- Clip tracking: `clip` is a `LogicalRect` in the current coordinate system; `combine_clip` intersects (returns false when empty), `translate` shifts it, `scale` divides it, `rotate` replaces it with the bounding box of the back-rotated rect (conservative); `save_state`/`restore_state` push/pop it. `get_current_clip` returns it so core can cull off-screen items
+- `draw_path` - `ImpellerPathBuilder` from `fitted_path_events` (move/line/quad/cubic/close), fill with the item's fill rule (`NonZero`/`Odd`), stroke with width, cap, join and miter limit; drawn after a builder translate by the fit offset
+- `draw_box_shadow` - non-inset: blurred rounded rect (`ImpellerMaskFilterCreateBlurNew`, Normal, sigma = blur/2) at offset, grown by spread; inset: clipped to the item, an even-odd path (big rect minus offset/spread rounded hole) filled with the same blur. Shadow shape is the item's rounded rect; a non-opaque or bordered source is not reproduced
+- `translate`, `rotate`, `scale`, `save_state` / `restore_state` - builder transform stack
+- `visit_opacity` - `SaveLayer` with alpha, or inline `apply_opacity` when no layer is needed
 
 **Partial (missing sub-features):**
 - `draw_image` - `colorize`, `source_clip`, `alignment`, `tiling` properties not handled
-- `combine_clip` - ignores `border_radius` and `border_width` (rectangular clip only)
+- `draw_path` - `stroke-dash-array` / `stroke-dash-offset` are ignored (no path effect in the C API); no viewbox-aware gradients
+- `draw_box_shadow` - shadow is always a solid rounded rect, not the item's real fill/border
 
 **Stubbed (empty, no-op):**
 - `draw_cached_pixmap`
-- `draw_text_input`
-- `draw_path`
-- `draw_box_shadow`
 - `visit_layer` (returns `ContinueRenderingChildren`)
 
 ### FFI Bindings (`ffi.rs`)
 
 Manual bindings (not bindgen). All Impeller objects are opaque `*mut c_void` handles with Retain/Release reference counting.
 
-**Handle types:** `ImpellerContext`, `ImpellerSurface`, `ImpellerDisplayListBuilder`, `ImpellerDisplayList`, `ImpellerPaint`, `ImpellerTypographyContext`, `ImpellerParagraphStyle`, `ImpellerParagraphBuilder`, `ImpellerParagraph`, `ImpellerTexture`, `ImpellerColorSource`
+**Handle types:** `ImpellerContext`, `ImpellerSurface`, `ImpellerDisplayListBuilder`, `ImpellerDisplayList`, `ImpellerPaint`, `ImpellerTexture`, `ImpellerColorSource`, `ImpellerColorFilter`, `ImpellerPath`, `ImpellerPathBuilder`, `ImpellerMaskFilter`
 
-**Structs:** `ImpellerRect{x,y,width,height: f32}`, `ImpellerISize{width,height: i64}`, `ImpellerPoint{x,y: f32}`, `ImpellerRoundingRadii{top_left,bottom_left,top_right,bottom_right: ImpellerPoint}`, `ImpellerColor{red,green,blue,alpha: f32, color_space}`, `ImpellerMapping{data,length,on_release}` (for font data), `ImpellerTextureDescriptor{pixel_format, size, mip_count}`
+**Structs:** `ImpellerRect{x,y,width,height: f32}`, `ImpellerISize{width,height: i64}`, `ImpellerPoint{x,y: f32}`, `ImpellerRoundingRadii{top_left,bottom_left,top_right,bottom_right: ImpellerPoint}`, `ImpellerColor{red,green,blue,alpha: f32, color_space}`, `ImpellerMapping{data,length,on_release}` (texture data), `ImpellerTextureDescriptor{pixel_format, size, mip_count}`
 
 **Version:** `IMPELLER_VERSION = (1<<29)|(1<<22)|(4<<12)|0` (v1.1.4.0)
 
 ### `WinitImpellerRenderer` (`winit/renderer/impeller.rs`)
 
 Thin adapter implementing `WinitCompatibleRenderer`. `new_suspended` ignores `SharedBackendData` (no shared context needed). `resume` creates the winit window and calls `set_window_handle`.
-
-## Font Registration
-
-Fonts are registered with Impeller's `ImpellerTypographyContext` at context creation time. The process:
-
-1. Enumerate fonts from fontique's collection (default fonts + default sans-serif)
-2. For each font, copy the raw font data into a leaked `Box<[u8]>` (Impeller stores a raw pointer without copying)
-3. Call `ImpellerTypographyContextRegisterFont` with the data and family name alias
-4. TTC fonts with index > 0 are skipped (Impeller doesn't handle TTC indices)
-
-The font family name is resolved from fontique's collection. When `draw_text` receives no explicit family, it queries fontique for the default sans-serif family and passes that name to `ImpellerParagraphStyleSetFontFamily`.
 
 ## Render Loop Detail (`ImpellerRenderer::render()`)
 
@@ -163,14 +150,12 @@ The font family name is resolved from fontique's collection. When `draw_text` re
 
 ## What Needs Implementing
 
-| Feature | Priority | Notes |
-|---|---|---|
-| Opacity | P0 | `SaveLayer` + accumulated alpha in paint |
-| Rounded rect clipping | P1 | `ClipRoundedRect` (combine_clip ignores border_radius) |
-| Box shadows | P1 | `MaskFilterCreateBlurNew` + blurred rounded rect |
-| Image colorize | P1 | `image.colorize()` never read |
-| Paths | P2 | PathBuilder API, map Slint path events |
-| Text input | P3 | Reuse draw_text + cursor/selection rects |
+| Feature | Notes |
+|---|---|
+| Image colorize, source_clip, tiling | `image.colorize()` never read |
+| Path dashes | no API in the C header |
+| Layers (`cache-rendering-hint`) | `visit_layer` is a pass-through |
+| Backdrop blur, accurate shadows for translucent/bordered items | |
 
 ## Impeller C API Header
 

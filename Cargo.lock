@@ -3650,7 +3650,9 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
+ "lyon_path",
  "raw-window-handle",
+ "swash",
 ]
 
 [[package]]

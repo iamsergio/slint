@@ -11,13 +11,12 @@ pub type ImpellerSurface = *mut c_void;
 pub type ImpellerDisplayListBuilder = *mut c_void;
 pub type ImpellerDisplayList = *mut c_void;
 pub type ImpellerPaint = *mut c_void;
-pub type ImpellerTypographyContext = *mut c_void;
-pub type ImpellerParagraph = *mut c_void;
-pub type ImpellerParagraphBuilder = *mut c_void;
-pub type ImpellerParagraphStyle = *mut c_void;
 pub type ImpellerTexture = *mut c_void;
 pub type ImpellerColorSource = *mut c_void;
 pub type ImpellerColorFilter = *mut c_void;
+pub type ImpellerPath = *mut c_void;
+pub type ImpellerPathBuilder = *mut c_void;
+pub type ImpellerMaskFilter = *mut c_void;
 
 pub type ImpellerCallback = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -137,45 +136,6 @@ pub enum ImpellerClipOperation {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ImpellerFontWeight {
-    W100 = 0,
-    W200 = 1,
-    W300 = 2,
-    W400 = 3,
-    W500 = 4,
-    W600 = 5,
-    W700 = 6,
-    W800 = 7,
-    W900 = 8,
-}
-
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ImpellerFontStyle {
-    Normal = 0,
-    Italic = 1,
-}
-
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ImpellerTextAlignment {
-    Left = 0,
-    Right = 1,
-    Center = 2,
-    Justify = 3,
-    Start = 4,
-    End = 5,
-}
-
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ImpellerTextDirection {
-    RTL = 0,
-    LTR = 1,
-}
-
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ImpellerTextureSampling {
     NearestNeighbor = 0,
     Linear = 1,
@@ -188,6 +148,39 @@ pub enum ImpellerTileMode {
     Repeat = 1,
     Mirror = 2,
     Decal = 3,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerFillType {
+    NonZero = 0,
+    Odd = 1,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerStrokeCap {
+    Butt = 0,
+    Round = 1,
+    Square = 2,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ImpellerStrokeJoin {
+    Miter = 0,
+    Round = 1,
+    Bevel = 2,
+}
+
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ImpellerBlurStyle {
+    Normal = 0,
+    Solid = 1,
+    Outer = 2,
+    Inner = 3,
 }
 
 #[repr(C)]
@@ -301,73 +294,6 @@ unsafe extern "C" {
 
     pub fn ImpellerDisplayListRelease(display_list: ImpellerDisplayList);
 
-    // Typography
-    pub fn ImpellerTypographyContextNew() -> ImpellerTypographyContext;
-    pub fn ImpellerTypographyContextRelease(context: ImpellerTypographyContext);
-    pub fn ImpellerTypographyContextRegisterFont(
-        context: ImpellerTypographyContext,
-        contents: *const ImpellerMapping,
-        user_data: *mut c_void,
-        family_name_alias: *const c_char,
-    ) -> bool;
-
-    // Paragraph style
-    pub fn ImpellerParagraphStyleNew() -> ImpellerParagraphStyle;
-    pub fn ImpellerParagraphStyleRelease(style: ImpellerParagraphStyle);
-    pub fn ImpellerParagraphStyleSetForeground(style: ImpellerParagraphStyle, paint: ImpellerPaint);
-    pub fn ImpellerParagraphStyleSetFontSize(style: ImpellerParagraphStyle, size: f32);
-    pub fn ImpellerParagraphStyleSetFontFamily(
-        style: ImpellerParagraphStyle,
-        family: *const c_char,
-    );
-    pub fn ImpellerParagraphStyleSetFontWeight(
-        style: ImpellerParagraphStyle,
-        weight: ImpellerFontWeight,
-    );
-    pub fn ImpellerParagraphStyleSetFontStyle(
-        style: ImpellerParagraphStyle,
-        font_style: ImpellerFontStyle,
-    );
-    pub fn ImpellerParagraphStyleSetTextAlignment(
-        style: ImpellerParagraphStyle,
-        alignment: ImpellerTextAlignment,
-    );
-    pub fn ImpellerParagraphStyleSetTextDirection(
-        style: ImpellerParagraphStyle,
-        direction: ImpellerTextDirection,
-    );
-
-    // Paragraph builder
-    pub fn ImpellerParagraphBuilderNew(
-        context: ImpellerTypographyContext,
-    ) -> ImpellerParagraphBuilder;
-    pub fn ImpellerParagraphBuilderRelease(builder: ImpellerParagraphBuilder);
-    pub fn ImpellerParagraphBuilderPushStyle(
-        builder: ImpellerParagraphBuilder,
-        style: ImpellerParagraphStyle,
-    );
-    pub fn ImpellerParagraphBuilderPopStyle(builder: ImpellerParagraphBuilder);
-    pub fn ImpellerParagraphBuilderAddText(
-        builder: ImpellerParagraphBuilder,
-        data: *const u8,
-        length: u32,
-    );
-    pub fn ImpellerParagraphBuilderBuildParagraphNew(
-        builder: ImpellerParagraphBuilder,
-        width: f32,
-    ) -> ImpellerParagraph;
-
-    // Paragraph
-    pub fn ImpellerParagraphRelease(paragraph: ImpellerParagraph);
-    pub fn ImpellerParagraphGetHeight(paragraph: ImpellerParagraph) -> f32;
-
-    // Display list builder - draw paragraph
-    pub fn ImpellerDisplayListBuilderDrawParagraph(
-        builder: ImpellerDisplayListBuilder,
-        paragraph: ImpellerParagraph,
-        point: *const ImpellerPoint,
-    );
-
     // Texture
     pub fn ImpellerTextureCreateWithContentsNew(
         context: ImpellerContext,
@@ -455,4 +381,55 @@ unsafe extern "C" {
     pub fn ImpellerColorFilterRelease(color_filter: ImpellerColorFilter);
 
     pub fn ImpellerPaintSetColorFilter(paint: ImpellerPaint, color_filter: ImpellerColorFilter);
+
+    // Paths
+    pub fn ImpellerPathRelease(path: ImpellerPath);
+    pub fn ImpellerPathBuilderNew() -> ImpellerPathBuilder;
+    pub fn ImpellerPathBuilderRelease(builder: ImpellerPathBuilder);
+    pub fn ImpellerPathBuilderMoveTo(builder: ImpellerPathBuilder, location: *const ImpellerPoint);
+    pub fn ImpellerPathBuilderLineTo(builder: ImpellerPathBuilder, location: *const ImpellerPoint);
+    pub fn ImpellerPathBuilderQuadraticCurveTo(
+        builder: ImpellerPathBuilder,
+        control_point: *const ImpellerPoint,
+        end_point: *const ImpellerPoint,
+    );
+    pub fn ImpellerPathBuilderCubicCurveTo(
+        builder: ImpellerPathBuilder,
+        control_point_1: *const ImpellerPoint,
+        control_point_2: *const ImpellerPoint,
+        end_point: *const ImpellerPoint,
+    );
+    pub fn ImpellerPathBuilderAddRect(builder: ImpellerPathBuilder, rect: *const ImpellerRect);
+    pub fn ImpellerPathBuilderAddRoundedRect(
+        builder: ImpellerPathBuilder,
+        rect: *const ImpellerRect,
+        rounding_radii: *const ImpellerRoundingRadii,
+    );
+    pub fn ImpellerPathBuilderClose(builder: ImpellerPathBuilder);
+    pub fn ImpellerPathBuilderTakePathNew(
+        builder: ImpellerPathBuilder,
+        fill: ImpellerFillType,
+    ) -> ImpellerPath;
+    pub fn ImpellerDisplayListBuilderDrawPath(
+        builder: ImpellerDisplayListBuilder,
+        path: ImpellerPath,
+        paint: ImpellerPaint,
+    );
+    pub fn ImpellerDisplayListBuilderClipRoundedRect(
+        builder: ImpellerDisplayListBuilder,
+        rect: *const ImpellerRect,
+        radii: *const ImpellerRoundingRadii,
+        op: ImpellerClipOperation,
+    );
+    pub fn ImpellerPaintSetStrokeCap(paint: ImpellerPaint, cap: ImpellerStrokeCap);
+    pub fn ImpellerPaintSetStrokeJoin(paint: ImpellerPaint, join: ImpellerStrokeJoin);
+    pub fn ImpellerPaintSetStrokeMiter(paint: ImpellerPaint, miter: f32);
+
+    // Mask filter
+    pub fn ImpellerMaskFilterCreateBlurNew(
+        style: ImpellerBlurStyle,
+        sigma: f32,
+    ) -> ImpellerMaskFilter;
+    pub fn ImpellerMaskFilterRelease(mask_filter: ImpellerMaskFilter);
+    pub fn ImpellerPaintSetMaskFilter(paint: ImpellerPaint, mask_filter: ImpellerMaskFilter);
 }
